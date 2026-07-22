@@ -14,6 +14,7 @@ page to everyone and defeat the role gating).
 from __future__ import annotations
 
 import os
+import pathlib
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -21,43 +22,40 @@ import streamlit.components.v1 as components
 import auth
 import db
 
-st.set_page_config(page_title="KidBucks", page_icon="🪙", layout="wide")
+GA_MEASUREMENT_ID = "G-CTJJNPW96R"
 
 
-def _inject_google_analytics() -> None:
-    """Load the Google Analytics gtag.js tag on every page.
+def _ensure_google_analytics() -> None:
+    """Put the Google Analytics gtag.js snippet in Streamlit's page <head>.
 
-    Streamlit doesn't expose the page <head>, so we inject the tag from a
-    0-height component into the parent document. Guarded so it loads only once
-    even though this runs on every rerun. This entry script (Home.py) runs for
-    every view, so the tag ends up on every page.
+    Streamlit doesn't expose the <head>, and injecting from a component iframe
+    isn't reliably detected (the iframe is cross-origin/sandboxed). Instead we
+    patch the static index.html that Streamlit serves, so the tag sits directly
+    in the real page head where Tag Assistant / GA can see it. Idempotent, and
+    re-applied automatically after a container restart (this runs on startup).
     """
-    components.html(
-        """
-        <script>
-        (function () {
-          try {
-            var p = window.parent, d = p.document;
-            if (d.getElementById('ga-gtag-js')) return;   // already loaded
-            var s = d.createElement('script');
-            s.id = 'ga-gtag-js';
-            s.async = true;
-            s.src = 'https://www.googletagmanager.com/gtag/js?id=G-CTJJNPW96R';
-            d.head.appendChild(s);
-            p.dataLayer = p.dataLayer || [];
-            function gtag(){ p.dataLayer.push(arguments); }
-            p.gtag = gtag;
-            gtag('js', new Date());
-            gtag('config', 'G-CTJJNPW96R');
-          } catch (e) { /* analytics is best-effort */ }
-        })();
-        </script>
-        """,
-        height=0,
-    )
+    try:
+        index_path = pathlib.Path(st.__file__).parent / "static" / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+        if GA_MEASUREMENT_ID in html or "<head>" not in html:
+            return
+        snippet = (
+            "<!-- Google tag (gtag.js) -->"
+            f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}"></script>'
+            "<script>window.dataLayer=window.dataLayer||[];"
+            "function gtag(){dataLayer.push(arguments);}"
+            "gtag('js',new Date());"
+            f"gtag('config','{GA_MEASUREMENT_ID}');</script>"
+        )
+        index_path.write_text(html.replace("<head>", "<head>" + snippet, 1),
+                              encoding="utf-8")
+    except Exception:
+        pass  # analytics is best-effort; never break the app
 
 
-_inject_google_analytics()
+_ensure_google_analytics()
+
+st.set_page_config(page_title="KidBucks", page_icon="🪙", layout="wide")
 
 # Use a hosted Postgres (e.g. Neon) when a DATABASE_URL is provided via Streamlit
 # secrets or the environment; otherwise fall back to a local SQLite file. Setting
