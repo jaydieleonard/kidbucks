@@ -23,6 +23,42 @@ import db
 
 st.set_page_config(page_title="KidBucks", page_icon="🪙", layout="wide")
 
+
+def _inject_google_analytics() -> None:
+    """Load the Google Analytics gtag.js tag on every page.
+
+    Streamlit doesn't expose the page <head>, so we inject the tag from a
+    0-height component into the parent document. Guarded so it loads only once
+    even though this runs on every rerun. This entry script (Home.py) runs for
+    every view, so the tag ends up on every page.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            var p = window.parent, d = p.document;
+            if (d.getElementById('ga-gtag-js')) return;   // already loaded
+            var s = d.createElement('script');
+            s.id = 'ga-gtag-js';
+            s.async = true;
+            s.src = 'https://www.googletagmanager.com/gtag/js?id=G-CTJJNPW96R';
+            d.head.appendChild(s);
+            p.dataLayer = p.dataLayer || [];
+            function gtag(){ p.dataLayer.push(arguments); }
+            p.gtag = gtag;
+            gtag('js', new Date());
+            gtag('config', 'G-CTJJNPW96R');
+          } catch (e) { /* analytics is best-effort */ }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+_inject_google_analytics()
+
 # Use a hosted Postgres (e.g. Neon) when a DATABASE_URL is provided via Streamlit
 # secrets or the environment; otherwise fall back to a local SQLite file. Setting
 # it before init_db() ensures db.py picks the right backend.
