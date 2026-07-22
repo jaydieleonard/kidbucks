@@ -77,25 +77,31 @@ with qa2.popover("⚠️ Quick demerit", width="stretch"):
 
 st.divider()
 
-# --- Overview of every linked kid, with a quick PIN reset ------------------
+# --- Overview of every linked kid (PIN reset is admin-only) ---------------
 st.subheader("Your kids")
-st.caption("Forgot a PIN? Reset it here and tell them the new one.")
+if user["is_admin"]:
+    st.caption("Forgot a PIN? Reset it here and tell them the new one.")
 for k in kids:
     with st.container(border=True):
-        c1, c2 = st.columns([3, 1])
-        c1.markdown(f"**{k['emoji']} {k['name']}** — {auth.fmt_bucks(k['balance'])}")
-        with c2.popover("🔑 Reset PIN", width="stretch"):
-            with st.form(f"pinreset_{k['id']}"):
-                new_pin = st.text_input(
-                    f"New PIN for {k['name']}", type="password", key=f"np_{k['id']}"
-                )
-                if st.form_submit_button("Set PIN", width="stretch"):
-                    if not new_pin.strip():
-                        st.error("Enter a PIN.")
-                    else:
-                        secret_hash, salt = auth.hash_secret(new_pin)
-                        db.reset_secret(k["id"], secret_hash, salt)
-                        st.success(f"{k['name']}'s PIN updated — tell them the new one.")
+        if user["is_admin"]:
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(f"**{k['emoji']} {k['name']}** — {auth.fmt_bucks(k['balance'])}")
+            with c2.popover("🔑 Reset PIN", width="stretch"):
+                with st.form(f"pinreset_{k['id']}"):
+                    new_pin = st.text_input(
+                        f"New PIN for {k['name']}", type="password", key=f"np_{k['id']}"
+                    )
+                    if st.form_submit_button("Set PIN", width="stretch"):
+                        if not new_pin.strip():
+                            st.error("Enter a PIN.")
+                        else:
+                            secret_hash, salt = auth.hash_secret(new_pin)
+                            db.reset_secret(k["id"], secret_hash, salt)
+                            st.success(
+                                f"{k['name']}'s PIN updated — tell them the new one."
+                            )
+        else:
+            st.markdown(f"**{k['emoji']} {k['name']}** — {auth.fmt_bucks(k['balance'])}")
 
 st.divider()
 
