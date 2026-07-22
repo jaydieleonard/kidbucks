@@ -14,7 +14,6 @@ page to everyone and defeat the role gating).
 from __future__ import annotations
 
 import os
-import pathlib
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -24,38 +23,49 @@ import db
 
 GA_MEASUREMENT_ID = "G-CTJJNPW96R"
 
-
-def _ensure_google_analytics() -> None:
-    """Put the Google Analytics gtag.js snippet in Streamlit's page <head>.
-
-    Streamlit doesn't expose the <head>, and injecting from a component iframe
-    isn't reliably detected (the iframe is cross-origin/sandboxed). Instead we
-    patch the static index.html that Streamlit serves, so the tag sits directly
-    in the real page head where Tag Assistant / GA can see it. Idempotent, and
-    re-applied automatically after a container restart (this runs on startup).
-    """
-    try:
-        index_path = pathlib.Path(st.__file__).parent / "static" / "index.html"
-        html = index_path.read_text(encoding="utf-8")
-        if GA_MEASUREMENT_ID in html or "<head>" not in html:
-            return
-        snippet = (
-            "<!-- Google tag (gtag.js) -->"
-            f'<script async src="https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}"></script>'
-            "<script>window.dataLayer=window.dataLayer||[];"
-            "function gtag(){dataLayer.push(arguments);}"
-            "gtag('js',new Date());"
-            f"gtag('config','{GA_MEASUREMENT_ID}');</script>"
-        )
-        index_path.write_text(html.replace("<head>", "<head>" + snippet, 1),
-                              encoding="utf-8")
-    except Exception:
-        pass  # analytics is best-effort; never break the app
-
-
-_ensure_google_analytics()
-
 st.set_page_config(page_title="KidBucks", page_icon="🪙", layout="wide")
+
+
+def _inject_google_analytics() -> None:
+    """Load the Google Analytics gtag.js tag into the live page.
+
+    Streamlit doesn't expose the page <head>, and patching the served
+    index.html does NOT work on Streamlit Community Cloud (its static shell is
+    read-only / pre-built). So we inject the tag with JavaScript from a hidden
+    0-height component into the parent document, which is same-origin on
+    Streamlit. This entry script runs for every view, so it covers every page;
+    the guard means it loads only once.
+
+    Verify with GA → Realtime (or the Tag Assistant browser extension). GA's
+    server-side "check installation" cannot see JS-injected tags and will keep
+    reporting "not detected" — that's a false negative on Streamlit, not a fault.
+    """
+    components.html(
+        f"""
+        <script>
+        (function () {{
+          try {{
+            var p = window.parent, d = p.document;
+            if (d.getElementById('ga-gtag-js')) return;   // already loaded
+            var s = d.createElement('script');
+            s.id = 'ga-gtag-js';
+            s.async = true;
+            s.src = 'https://www.googletagmanager.com/gtag/js?id={GA_MEASUREMENT_ID}';
+            d.head.appendChild(s);
+            p.dataLayer = p.dataLayer || [];
+            function gtag(){{ p.dataLayer.push(arguments); }}
+            p.gtag = gtag;
+            gtag('js', new Date());
+            gtag('config', '{GA_MEASUREMENT_ID}');
+          }} catch (e) {{ /* analytics is best-effort */ }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+_inject_google_analytics()
 
 # Use a hosted Postgres (e.g. Neon) when a DATABASE_URL is provided via Streamlit
 # secrets or the environment; otherwise fall back to a local SQLite file. Setting
