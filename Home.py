@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import auth
 import db
@@ -46,29 +47,103 @@ def _brand_header() -> None:
     )
 
 
-def _resolve_family_code() -> dict | None:
-    """Family-code input (prefilled from ?family=CODE). Returns the family or None."""
-    qp_family = st.query_params.get("family", "")
-    if "login_family_code" not in st.session_state and qp_family:
-        st.session_state["login_family_code"] = qp_family
-
-    code = st.text_input(
-        "Family code", key="login_family_code", placeholder="e.g. SMITH-7K2Q"
+def _persist_family(code: str) -> None:
+    """Best-effort: remember this family on the device (cookie + localStorage) so
+    the code doesn't have to be retyped next visit. Safe no-op if the browser
+    blocks it."""
+    safe = code.replace('"', "").replace("'", "").replace("\\", "")
+    components.html(
+        f"""
+        <script>
+          try {{
+            document.cookie = "kidbucks_family={safe}; max-age=31536000; path=/; SameSite=Lax";
+            window.localStorage.setItem("kidbucks_family", "{safe}");
+          }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
     )
-    if not code.strip():
-        st.info("Enter your family code to log in, or **Register** to create one.")
-        return None
-    family = db.get_family_by_code(code)
-    if not family:
+
+
+def _forget_family() -> None:
+    components.html(
+        """
+        <script>
+          try {
+            document.cookie = "kidbucks_family=; max-age=0; path=/";
+            window.localStorage.removeItem("kidbucks_family");
+          } catch (e) {}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _remembered_code() -> str:
+    """The family code saved on this device from a previous visit (or '')."""
+    try:
+        cookie = st.context.headers.get("Cookie", "") or ""
+    except Exception:
+        return ""
+    for part in cookie.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == "kidbucks_family" and value:
+            return value.strip()
+    return ""
+
+
+def _resolve_family() -> dict | None:
+    """Work out which family we're logging into WITHOUT retyping the code each
+    time. Priority: URL ?family= → this session → this device (cookie). Kids can
+    just bookmark the family link (or add it to their home screen) and land
+    straight on the name + PIN step."""
+    code = (
+        st.query_params.get("family", "").strip()
+        or st.session_state.get("family_code", "")
+        or _remembered_code()
+    )
+    family = db.get_family_by_code(code) if code else None
+
+    if family:
+        # Remember it everywhere so refreshes and future visits skip the code.
+        st.session_state["family_code"] = family["code"]
+        if st.query_params.get("family") != family["code"]:
+            st.query_params["family"] = family["code"]
+        _persist_family(family["code"])
+        st.success(f"👨‍👩‍👧‍👦 Family: **{family['name']}**")
+        if st.button("Not your family? Switch", key="switch_family"):
+            _forget_family()
+            st.session_state.pop("family_code", None)
+            st.session_state.pop("family_code_entry", None)
+            try:
+                del st.query_params["family"]
+            except Exception:
+                st.query_params.clear()
+            st.rerun()
+        return family
+
+    # First time on this device — ask for the code once, then remember it.
+    entered = st.text_input(
+        "Family code", key="family_code_entry", placeholder="e.g. SMITH-7K2Q",
+        help="Ask a parent for your family code. You only enter it once on this "
+             "device — after that it's remembered.",
+    ).strip()
+    if entered:
+        fam = db.get_family_by_code(entered)
+        if fam:
+            st.session_state["family_code"] = fam["code"]
+            st.query_params["family"] = fam["code"]
+            _persist_family(fam["code"])
+            st.rerun()
         st.error("No family found for that code. Check it, or register below.")
-        return None
-    st.success(f"Family: **{family['name']}**")
-    return family
+    else:
+        st.info("Enter your family code once — this device will remember it next time.")
+    return None
 
 
 def _login_tab() -> None:
     st.subheader("Log in")
-    family = _resolve_family_code()
+    family = _resolve_family()
     if not family:
         return
 
@@ -239,6 +314,8 @@ def _build_navigation(user: dict):
 
 
 def _sidebar_account(user: dict) -> None:
+    # Remember this family on the device so the next visit skips the code entry.
+    _persist_family(user["family_code"])
     with st.sidebar:
         st.markdown(f"### {user['emoji']} {user['name']}")
         role_label = "Admin parent" if user["is_admin"] else user["role"].capitalize()
