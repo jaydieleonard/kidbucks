@@ -91,12 +91,17 @@ with rendered[1]:
 # --- Admin: manage users ---------------------------------------------------
 if user["is_admin"]:
     with rendered[2]:
+        st.info(
+            "🔒 For everyone's safety, passwords & PINs are stored **encrypted** and "
+            "can't be shown. You can see every family member below and **reset** "
+            "anyone's password/PIN to a new value you choose."
+        )
         parents = db.list_parents(fam_id)
         parent_by_name = {p["name"]: p["id"] for p in parents}
         id_to_parent_name = {p["id"]: p["name"] for p in parents}
         admin_count = sum(1 for p in parents if p["is_admin"])
 
-        st.subheader("Parents")
+        st.subheader(f"Parents ({len(parents)})")
         for p in parents:
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
@@ -123,6 +128,18 @@ if user["is_admin"]:
                                  width="stretch", disabled=not can_delete):
                         db.delete_user(p["id"])
                         st.rerun()
+                with st.expander("Reset password"):
+                    with st.form(f"pwreset_{p['id']}"):
+                        newpw = st.text_input(
+                            "New password", type="password", key=f"pw_{p['id']}"
+                        )
+                        if st.form_submit_button("Set new password", width="stretch"):
+                            if not newpw:
+                                st.error("Enter a new password.")
+                            else:
+                                h, s = auth.hash_secret(newpw)
+                                db.reset_secret(p["id"], h, s)
+                                st.success(f"Password reset for {p['name']}.")
 
         st.divider()
         st.subheader("Kids")

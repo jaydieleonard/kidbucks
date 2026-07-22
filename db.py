@@ -47,6 +47,8 @@ TXN_CHORE = "chore"
 TXN_PENALTY = "penalty"
 TXN_REDEMPTION = "redemption"
 TXN_ADJUSTMENT = "adjustment"
+TXN_BONUS = "bonus"        # spontaneous reward for good behaviour
+TXN_DEMERIT = "demerit"    # spontaneous one-off deduction
 
 # Chore recurrence values and their human labels.
 RECURRENCE_ONCE = "once"

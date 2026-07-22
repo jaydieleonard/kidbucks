@@ -165,16 +165,24 @@ def _login_tab() -> None:
                 else:
                     st.error("Wrong PIN. Try again.")
     else:
+        parents = db.list_parents(family["id"])
+        if not parents:
+            st.info("No parent accounts in this family yet. Register one below.")
+            return
         with st.form("parent_login"):
-            username = st.text_input("Username")
+            parent_by_label = {f"{p['emoji']} {p['name']}": p for p in parents}
+            picked = st.selectbox("Your name", list(parent_by_label.keys()))
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Log in", width="stretch"):
-                user = auth.authenticate_parent(family["id"], username.strip(), password)
+                parent = parent_by_label[picked]
+                user = auth.authenticate_parent(
+                    family["id"], parent["username"], password
+                )
                 if user:
                     auth.login(user)
                     st.rerun()
                 else:
-                    st.error("Wrong username or password.")
+                    st.error("Wrong password. Try again.")
 
 
 def _register_tab() -> None:
@@ -292,6 +300,7 @@ def _build_navigation(user: dict):
                 st.Page("views/wallet.py", title="My Wallet", icon="👛", default=True),
                 st.Page("views/do_chores.py", title="Do Chores", icon="✅"),
                 st.Page("views/redeem.py", title="Redeem", icon="🎁"),
+                st.Page("views/account.py", title="My Account", icon="🔑"),
             ]
         }
     else:  # parent (and admin, which is a parent with extra pages)
@@ -303,6 +312,7 @@ def _build_navigation(user: dict):
                 st.Page("views/manage_chores.py", title="Chores", icon="🧹"),
                 st.Page("views/penalties.py", title="Penalties", icon="⚠️"),
                 st.Page("views/family.py", title="Family", icon="👨‍👩‍👧‍👦"),
+                st.Page("views/account.py", title="My Account", icon="🔑"),
             ]
         }
         if user["is_admin"]:
