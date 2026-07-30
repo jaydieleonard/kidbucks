@@ -32,6 +32,29 @@ with c2:
 
 st.divider()
 
+# --- Pocket money tracker (per month) --------------------------------------
+month = db.current_month()
+pm = db.pocket_money_month_total(user["id"], month)
+st.subheader("💵 Pocket money")
+p1, p2 = st.columns(2)
+p1.metric(
+    f"Redeemed in {db.month_label(month)}", db.fmt_units(pm["units"], pm["unit_label"])
+)
+p2.metric("Not yet paid", db.fmt_units(pm["unpaid_units"], pm["unit_label"]))
+
+history = [h for h in db.pocket_money_monthly_history(user["id"]) if h["month"] != month]
+if history:
+    with st.expander("Previous months"):
+        for h in history:
+            note = ("all paid" if h["paid_count"] == h["count"]
+                    else f"{h['paid_count']}/{h['count']} paid")
+            st.write(
+                f"**{db.month_label(h['month'])}** — "
+                f"{db.fmt_units(h['units'], h['unit_label'])}  ·  _{note}_"
+            )
+
+st.divider()
+
 st.subheader("Recent activity")
 txns = db.recent_transactions(user["id"], limit=25)
 if not txns:

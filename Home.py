@@ -355,6 +355,7 @@ def _build_navigation(user: dict):
                 st.Page("views/approvals.py", title="Approvals", icon="🔔"),
                 st.Page("views/manage_chores.py", title="Chores", icon="🧹"),
                 st.Page("views/penalties.py", title="Penalties", icon="⚠️"),
+                st.Page("views/pocket_money.py", title="Pocket Money", icon="💵"),
                 st.Page("views/family.py", title="Family", icon="👨‍👩‍👧‍👦"),
                 st.Page("views/account.py", title="My Account", icon="🔑"),
             ]

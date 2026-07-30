@@ -342,10 +342,36 @@ def init_db() -> None:
                                  CHECK (status IN ('pending', 'approved', 'rejected')),
                 requested_at TEXT    NOT NULL,
                 reviewed_by  INTEGER REFERENCES users(id),
-                reviewed_at  TEXT
+                reviewed_at  TEXT,
+                paid         INTEGER NOT NULL DEFAULT 0,
+                paid_at      TEXT
             )
             """
         )
+
+        # Lightweight migrations so an already-deployed database (e.g. Neon) gains
+        # newer columns without a manual step. CREATE TABLE IF NOT EXISTS never
+        # alters an existing table, so we add any missing columns here.
+        _add_column_if_missing(conn, "chores", "recurrence",
+                               "TEXT NOT NULL DEFAULT 'once'")
+        _add_column_if_missing(conn, "chores", "shared", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "chore_submissions", "period_key",
+                               "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "redemption_options", "per_child",
+                               "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "redemption_requests", "paid",
+                               "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "redemption_requests", "paid_at", "TEXT")
+
+
+def _add_column_if_missing(conn, table: str, column: str, coldef: str) -> None:
+    """Add a column only if the table doesn't already have it (both backends)."""
+    if is_postgres():
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coldef}")
+    else:
+        existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
 
 
 def _now() -> str:
@@ -1123,8 +1149,9 @@ def clear_kid_rate(option_id: int, kid_id: int) -> None:
 def request_redemption(kid_id: int, option_id: int, units: float) -> int | None:
     """Kid asks to convert bucks. Cost is snapshotted; awaits parent approval.
 
-    Returns request id, or None if the option is missing/inactive, units are
-    non-positive, or the kid can't currently afford the cost.
+    Balances are allowed to go negative, so this no longer blocks on
+    affordability. Returns request id, or None if the option is missing/inactive
+    or units are non-positive.
     """
     if units <= 0:
         return None
@@ -1146,12 +1173,6 @@ def request_redemption(kid_id: int, option_id: int, units: float) -> int | None:
             if ov:
                 rate = ov[0]
         cost = _redemption_cost(rate, units)
-        balance = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE kid_id = ?",
-            (kid_id,),
-        ).fetchone()[0]
-        if cost > balance:
-            return None
         return conn.insert(
             """
             INSERT INTO redemption_requests (kid_id, option_id, option_name, units,
@@ -1214,8 +1235,8 @@ def kid_redemptions(kid_id: int, limit: int = 25) -> list[dict]:
 def approve_redemption(request_id: int, reviewer_id: int) -> tuple[bool, str]:
     """Approve a redemption, deducting the bucks.
 
-    Re-checks the balance at approval time (it may have dropped since the
-    request). Returns (ok, message).
+    Balances may go negative, so approval is never blocked on affordability.
+    Returns (ok, message).
     """
     with get_connection() as conn:
         req = conn.execute(
@@ -1224,12 +1245,6 @@ def approve_redemption(request_id: int, reviewer_id: int) -> tuple[bool, str]:
         ).fetchone()
         if not req:
             return False, "Request no longer pending."
-        balance = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE kid_id = ?",
-            (req["kid_id"],),
-        ).fetchone()[0]
-        if req["bucks_spent"] > balance:
-            return False, "Kid no longer has enough bucks for this redemption."
         conn.execute(
             "UPDATE redemption_requests SET status = 'approved', reviewed_by = ?, "
             "reviewed_at = ? WHERE id = ?",
@@ -1281,3 +1296,85 @@ def outstanding_approvals_for_parent(parent_id: int) -> int:
             (parent_id,),
         ).fetchone()[0]
     return chores + redemptions
+
+
+# --- Pocket money tracking -------------------------------------------------
+# "Pocket money" = an approved redemption whose unit is real money (a currency
+# symbol like R), as opposed to screen time. Tracked by the month it was
+# approved, with a `paid` flag the parent sets once the cash is handed over.
+
+def current_month() -> str:
+    return datetime.now().strftime("%Y-%m")
+
+
+def month_label(month: str) -> str:
+    """'2026-07' -> 'July 2026' (falls back to the raw value)."""
+    try:
+        return datetime.strptime(month + "-01", "%Y-%m-%d").strftime("%B %Y")
+    except (ValueError, TypeError):
+        return month
+
+
+def is_currency_unit(unit: str) -> bool:
+    return (unit or "").strip().lower() in _CURRENCY_UNITS
+
+
+def _redemption_month(row: dict) -> str:
+    ts = row.get("reviewed_at") or row.get("requested_at") or ""
+    return ts[:7]
+
+
+def mark_redemption_paid(request_id: int, paid: bool = True) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE redemption_requests SET paid = ?, paid_at = ? WHERE id = ?",
+            (int(paid), _now() if paid else None, request_id),
+        )
+
+
+def pocket_money_redemptions(kid_id: int, month: str | None = None) -> list[dict]:
+    """Approved real-money redemptions for a kid, newest first. `month` filters
+    to a 'YYYY-MM' by approval date."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, option_name, units, unit_label, bucks_spent, requested_at,
+                   reviewed_at, paid, paid_at
+              FROM redemption_requests
+             WHERE kid_id = ? AND status = 'approved'
+             ORDER BY COALESCE(reviewed_at, requested_at) DESC
+            """,
+            (kid_id,),
+        ).fetchall()
+    result = [dict(r) for r in rows if is_currency_unit(r["unit_label"])]
+    if month:
+        result = [r for r in result if _redemption_month(r) == month]
+    return result
+
+
+def pocket_money_month_total(kid_id: int, month: str) -> dict:
+    """Summary for one month: total/unpaid units and counts."""
+    rows = pocket_money_redemptions(kid_id, month)
+    return {
+        "units": sum(r["units"] for r in rows),
+        "unit_label": rows[0]["unit_label"] if rows else "R",
+        "count": len(rows),
+        "unpaid_units": sum(r["units"] for r in rows if not r["paid"]),
+        "unpaid_count": sum(1 for r in rows if not r["paid"]),
+    }
+
+
+def pocket_money_monthly_history(kid_id: int) -> list[dict]:
+    """Totals grouped by month (newest first): month, units, count, paid_count."""
+    agg: dict[str, dict] = {}
+    for r in pocket_money_redemptions(kid_id):
+        m = _redemption_month(r)
+        a = agg.setdefault(
+            m,
+            {"month": m, "units": 0.0, "count": 0, "paid_count": 0,
+             "unit_label": r["unit_label"]},
+        )
+        a["units"] += r["units"]
+        a["count"] += 1
+        a["paid_count"] += 1 if r["paid"] else 0
+    return sorted(agg.values(), key=lambda x: x["month"], reverse=True)

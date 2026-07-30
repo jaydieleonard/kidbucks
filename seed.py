@@ -6,6 +6,8 @@ Safe to run repeatedly — it clears all existing rows first.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import auth
 import db
 
@@ -107,11 +109,44 @@ def main() -> None:
 
     # Give Ava a starting balance so redeeming works right away.
     db.add_transaction(
-        kid_ids["Ava"], 60, db.TXN_CHORE, "Chore: Wash the car (earlier)"
+        kid_ids["Ava"], 200, db.TXN_CHORE, "Chore: Wash the car (earlier)"
     )
     # A couple of pending submissions so the Approvals page isn't empty.
     db.submit_chore(kid_ids["Ava"], chore_ids["Make your bed"])
     db.submit_chore(kid_ids["Ben"], chore_ids["Wash the dishes"])
+
+    # Demo pocket-money history for Ava: last month (paid) + this month (unpaid).
+    now = datetime.now()
+    this_when = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    prev_when = (now.replace(day=1) - timedelta(days=1)).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
+    pm_option = option_ids["Pocket Money"]
+    with db.get_connection() as conn:
+        for units, bucks, when, paid in [
+            (5, 50, prev_when, True),
+            (3, 30, this_when, False),
+        ]:
+            when_iso = when.isoformat(timespec="seconds")
+            rid = conn.insert(
+                """
+                INSERT INTO redemption_requests
+                    (kid_id, option_id, option_name, units, unit_label, bucks_spent,
+                     status, requested_at, reviewed_by, reviewed_at, paid, paid_at)
+                VALUES (?, ?, 'Pocket Money', ?, 'R', ?, 'approved', ?, ?, ?, ?, ?)
+                """,
+                (kid_ids["Ava"], pm_option, units, bucks, when_iso,
+                 parent_ids["mom"], when_iso, int(paid), when_iso if paid else None),
+            )
+            conn.execute(
+                """
+                INSERT INTO transactions (kid_id, amount, type, reason, ref_id,
+                                          created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (kid_ids["Ava"], -bucks, db.TXN_REDEMPTION,
+                 f"Redeemed: R{units} of Pocket Money", rid, when_iso),
+            )
 
     print(f"Seeded demo family into {db.DB_PATH}\n")
     print(f"Family: {FAMILY_NAME}")

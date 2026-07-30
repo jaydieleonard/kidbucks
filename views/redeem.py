@@ -33,44 +33,28 @@ opt = opt_by_label[choice]
 # Each kid may have their own rate for a per-child option (e.g. pocket money).
 rate = db.effective_rate(opt["id"], user["id"])
 
-# Most of this unit the kid can afford right now (cost rounds up, balance is
-# whole bucks, so floor(balance / rate) is the exact maximum).
-import math
-
-max_units = math.floor(balance / rate) if rate and rate > 0 else 0
-
 st.write(f"Your rate: **{rate:g} {auth.BUCK}** per 1 {opt['unit']}")
+st.caption(f"Your balance: {auth.fmt_bucks(balance)}")
 
-if max_units >= 1:
-    st.success(
-        f"💰 With your {auth.fmt_bucks(balance)} you can get up to "
-        f"**{db.fmt_units(max_units, opt['unit'])}** of {opt['name']}."
+with st.form("redeem"):
+    units = st.number_input(
+        f"How much {opt['name']}?", min_value=1.0, step=1.0, value=1.0
     )
-else:
-    st.warning(
-        f"You can't afford any {opt['name']} yet — do some chores to earn more "
-        f"KidBucks!"
+    cost = db.redemption_cost(rate, units)
+    remaining = balance - cost
+    st.write(
+        f"Cost: **{auth.fmt_bucks(cost)}** for {db.fmt_units(units, opt['unit'])} · "
+        f"balance after: **{auth.fmt_bucks(remaining)}**"
     )
-
-if max_units >= 1:
-    with st.form("redeem"):
-        units = st.number_input(
-            f"How much {opt['name']}? (max {db.fmt_units(max_units, opt['unit'])})",
-            min_value=1.0, max_value=float(max_units), step=1.0, value=1.0,
-        )
-        cost = db.redemption_cost(rate, units)
-        remaining = balance - cost
-        st.write(
-            f"Cost: **{auth.fmt_bucks(cost)}** for {db.fmt_units(units, opt['unit'])} · "
-            f"you'd have {auth.fmt_bucks(remaining)} left"
-        )
-        if st.form_submit_button("Request redemption", width="stretch"):
-            req = db.request_redemption(user["id"], opt["id"], units)
-            if req is None:
-                st.error("Couldn't submit — check you have enough bucks.")
-            else:
-                st.success("Request sent! A parent will approve it soon. 🎉")
-                st.rerun()
+    if remaining < 0:
+        st.warning("Heads up — this will put your balance into the negative.")
+    if st.form_submit_button("Request redemption", width="stretch"):
+        req = db.request_redemption(user["id"], opt["id"], units)
+        if req is None:
+            st.error("Couldn't submit that amount — please try again.")
+        else:
+            st.success("Request sent! A parent will approve it soon. 🎉")
+            st.rerun()
 
 st.divider()
 
