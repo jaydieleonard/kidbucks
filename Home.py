@@ -26,6 +26,44 @@ GA_MEASUREMENT_ID = "G-CTJJNPW96R"
 st.set_page_config(page_title="KidBucks", page_icon="🪙", layout="wide")
 
 
+def _inject_mobile_css() -> None:
+    """Make the layout comfortable on a phone: reclaim padding, stack column
+    rows vertically (so nothing is cramped) and use full-width tap targets.
+    Only applies at phone widths; desktop is unchanged."""
+    st.markdown(
+        """
+        <style>
+        @media (max-width: 480px) {
+          .block-container {
+            padding-top: 3rem !important;
+            padding-left: 0.9rem !important;
+            padding-right: 0.9rem !important;
+          }
+          /* Stack any row of columns vertically instead of squishing them */
+          div[data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 0.5rem !important;
+          }
+          div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+          div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+          }
+          /* Comfortable, full-width buttons */
+          .stButton > button, .stFormSubmitButton > button {
+            width: 100%;
+            min-height: 2.6rem;
+          }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_mobile_css()
+
+
 def _inject_google_analytics() -> None:
     """Load the Google Analytics gtag.js tag into the live page.
 

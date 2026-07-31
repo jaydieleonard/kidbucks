@@ -60,3 +60,16 @@ else:
                 secret_hash, salt = auth.hash_secret(new)
                 db.reset_secret(user["id"], secret_hash, salt)
                 st.success("Your password has been updated. ✅")
+
+st.divider()
+
+# --- Add to iPhone home screen ---------------------------------------------
+with st.expander("📲 Add KidBucks to your iPhone home screen"):
+    st.markdown(
+        "1. Open KidBucks in **Safari**.\n"
+        "2. Tap the **Share** button (a square with an arrow pointing up).\n"
+        "3. Scroll down and tap **Add to Home Screen** → **Add**.\n\n"
+        "KidBucks then opens from your home screen like an app. The icon remembers "
+        "your family, so you only ever tap your name and PIN — and it keeps you "
+        "signed in for up to a week."
+    )
