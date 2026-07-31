@@ -11,7 +11,7 @@ import db
 user = auth.require()  # any logged-in user
 is_kid = user["role"] == "kid"
 
-EMOJI_CHOICES = ["🙂", "😀", "😎", "🦄", "🐯", "🦖", "🚀", "⚽", "🎮", "🌟", "🐶", "🐱"]
+EMOJI_CHOICES = auth.EMOJI_CHOICES
 
 st.title("🔑 My Account")
 st.markdown(f"### {user['emoji']} {user['name']}")

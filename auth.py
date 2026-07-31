@@ -30,6 +30,13 @@ LOGIN_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 # Currency glyph shown throughout the app (KidBucks = ₿).
 BUCK = "₿"
 
+# Avatars kids and parents can pick. One shared list so every screen matches.
+EMOJI_CHOICES = [
+    "🙂", "😀", "😎", "🦄", "🐯", "🦖", "🐶", "🐱", "🦁", "🐢", "🦋",
+    "🚀", "🚗", "🏍️", "🚲", "⚽", "🏀", "🏏", "🎮", "🎸", "🎨",
+    "🌟", "🌸", "🌈", "🍕",
+]
+
 
 def fmt_bucks(amount) -> str:
     """Render an amount of KidBucks, e.g. 125 -> '125 ₿'."""

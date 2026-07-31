@@ -117,7 +117,7 @@ except Exception:
 
 db.init_db()
 
-EMOJI_CHOICES = ["🙂", "😀", "😎", "🦄", "🐯", "🦖", "🚀", "⚽", "🎮", "🌟", "🐶", "🐱"]
+EMOJI_CHOICES = auth.EMOJI_CHOICES
 
 # --- Persistent "stay logged in" via a real browser cookie -----------------
 # Uses a proper cookie component (reliable on Streamlit Cloud, unlike the

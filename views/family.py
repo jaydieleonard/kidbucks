@@ -12,7 +12,7 @@ import db
 user = auth.require("parent")
 fam_id = user["family_id"]
 
-EMOJI_CHOICES = ["🙂", "😀", "😎", "🦄", "🐯", "🦖", "🚀", "⚽", "🎮", "🌟", "🐶", "🐱"]
+EMOJI_CHOICES = auth.EMOJI_CHOICES
 
 st.title("👨‍👩‍👧‍👦 " + user["family_name"])
 
