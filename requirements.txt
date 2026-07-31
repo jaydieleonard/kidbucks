@@ -2,5 +2,5 @@
 # on the device (set a cookie/localStorage), which later Streamlit versions drop.
 streamlit>=1.58,<1.59
 pandas
-psycopg[binary]>=3.1
+psycopg[binary,pool]>=3.1
 streamlit-cookies-controller>=0.0.4

@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -75,6 +76,36 @@ def is_postgres() -> bool:
     return bool(_database_url())
 
 
+# --- Read-query caching (Streamlit only) -----------------------------------
+# Read functions are cached briefly to avoid re-hitting the DB on every rerun.
+# ANY write clears the cache (see _Conn.__exit__), so data is never stale beyond
+# a completed change. No-ops when Streamlit isn't running (e.g. seed.py).
+try:
+    import streamlit as _st
+except Exception:  # pragma: no cover
+    _st = None
+
+_CACHE_TTL_SECONDS = 10
+
+
+def _cached(fn):
+    if _st is None:
+        return fn
+    try:
+        return _st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)(fn)
+    except Exception:
+        return fn
+
+
+def _clear_read_cache() -> None:
+    if _st is None:
+        return
+    try:
+        _st.cache_data.clear()
+    except Exception:
+        pass
+
+
 class _Row(dict):
     """A dict row that also supports positional access (row[0]), like sqlite3.Row.
 
@@ -87,17 +118,54 @@ class _Row(dict):
         return super().__getitem__(key)
 
 
+def _pg_row_factory(cursor):
+    from psycopg.rows import dict_row
+    make_dict = dict_row(cursor)
+    return lambda values: _Row(make_dict(values))
+
+
+# A process-wide connection pool for Postgres, so we reuse warm connections
+# instead of doing a TLS handshake to the remote DB on every query (the main
+# cause of slow pages on Neon). Created lazily; falls back to direct connections
+# if the pool library/creation fails.
+_pg_pool = None
+_pg_pool_failed = False
+_pool_lock = threading.Lock()
+
+
+def _get_pg_pool():
+    global _pg_pool, _pg_pool_failed
+    if _pg_pool is not None or _pg_pool_failed:
+        return _pg_pool
+    with _pool_lock:
+        if _pg_pool is None and not _pg_pool_failed:
+            try:
+                from psycopg_pool import ConnectionPool
+                _pg_pool = ConnectionPool(
+                    _database_url(),
+                    min_size=1, max_size=5, timeout=10, max_idle=120,
+                    kwargs={"autocommit": False, "row_factory": _pg_row_factory},
+                    open=True,
+                )
+            except Exception:
+                _pg_pool_failed = True
+    return _pg_pool
+
+
 class _Conn:
     """Uniform wrapper over sqlite3 / psycopg connections.
 
     Translates our SQLite-flavoured SQL to Postgres on the fly (placeholders,
     autoincrement, `INSERT OR IGNORE`, `COLLATE NOCASE`) so the rest of this
-    module is written once. Commits on clean exit, rolls back on error.
+    module is written once. Commits on clean exit, rolls back on error, and
+    clears the read cache whenever the block performed a write.
     """
 
-    def __init__(self, raw, postgres: bool):
+    def __init__(self, raw, postgres: bool, pool=None):
         self._raw = raw
         self._pg = postgres
+        self._pool = pool
+        self._wrote = False
 
     def _tr(self, sql: str) -> str:
         if not self._pg:
@@ -113,16 +181,26 @@ class _Conn:
         sql = sql.replace("?", "%s")
         return sql
 
+    def _note_write(self, sql: str) -> None:
+        head = sql.strip().split(None, 1)
+        if head and head[0].upper() in {
+            "INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "CREATE", "DROP",
+        }:
+            self._wrote = True
+
     def execute(self, sql, params=()):
+        self._note_write(sql)
         return self._raw.execute(self._tr(sql), tuple(params))
 
     def executemany(self, sql, seq):
+        self._wrote = True
         cur = self._raw.cursor()
         cur.executemany(self._tr(sql), [tuple(p) for p in seq])
         return cur
 
     def insert(self, sql, params=()):
         """Run an INSERT and return the new row's `id` (both backends)."""
+        self._wrote = True
         if self._pg:
             cur = self._raw.execute(self._tr(sql) + " RETURNING id", tuple(params))
             return cur.fetchone()[0]
@@ -139,22 +217,31 @@ class _Conn:
             else:
                 self._raw.commit()
         finally:
-            self._raw.close()
+            if self._pool is not None:
+                try:
+                    self._pool.putconn(self._raw)   # return to pool (stays warm)
+                except Exception:
+                    try:
+                        self._raw.close()
+                    except Exception:
+                        pass
+            else:
+                self._raw.close()
+        if exc_type is None and self._wrote:
+            _clear_read_cache()
         return False
 
 
 def get_connection() -> _Conn:
     """Open a connection. Rows behave like dicts (row["name"]) and tuples (row[0])."""
     if is_postgres():
+        pool = _get_pg_pool()
+        if pool is not None:
+            return _Conn(pool.getconn(), postgres=True, pool=pool)
+        # Fallback: direct connection if the pool couldn't be created.
         import psycopg
-        from psycopg.rows import dict_row
-
-        def row_factory(cursor):
-            make_dict = dict_row(cursor)
-            return lambda values: _Row(make_dict(values))
-
         raw = psycopg.connect(
-            _database_url(), autocommit=False, row_factory=row_factory
+            _database_url(), autocommit=False, row_factory=_pg_row_factory
         )
         return _Conn(raw, postgres=True)
 
@@ -425,6 +512,7 @@ def create_family(name: str) -> tuple[int, str]:
         return fam_id, code
 
 
+@_cached
 def get_family(family_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
@@ -433,6 +521,7 @@ def get_family(family_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+@_cached
 def get_family_by_code(code: str) -> dict | None:
     with get_connection() as conn:
         row = conn.execute(
@@ -466,6 +555,7 @@ def create_user(
         )
 
 
+@_cached
 def get_user(user_id: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -513,6 +603,7 @@ def count_parents(family_id: int) -> int:
         ).fetchone()[0]
 
 
+@_cached
 def list_parents(family_id: int) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -581,6 +672,7 @@ def set_kid_parents(kid_id: int, parent_ids: list[int]) -> None:
         )
 
 
+@_cached
 def get_kid_parent_ids(kid_id: int) -> list[int]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -589,6 +681,7 @@ def get_kid_parent_ids(kid_id: int) -> list[int]:
     return [r[0] for r in rows]
 
 
+@_cached
 def list_kids_for_parent(parent_id: int) -> list[dict]:
     """Kids linked to this parent, each with their current balance."""
     with get_connection() as conn:
@@ -608,6 +701,7 @@ def list_kids_for_parent(parent_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+@_cached
 def list_all_kids(family_id: int) -> list[dict]:
     """Every kid in a family with their balance."""
     with get_connection() as conn:
@@ -651,6 +745,7 @@ def add_transaction(
         )
 
 
+@_cached
 def get_balance(kid_id: int) -> int:
     with get_connection() as conn:
         row = conn.execute(
@@ -660,6 +755,7 @@ def get_balance(kid_id: int) -> int:
     return row[0]
 
 
+@_cached
 def kid_summary(kid_id: int) -> dict:
     """Balance plus lifetime earned/spent and count of pending items."""
     with get_connection() as conn:
@@ -695,6 +791,7 @@ def kid_summary(kid_id: int) -> dict:
     }
 
 
+@_cached
 def recent_transactions(kid_id: int, limit: int = 25) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -776,6 +873,7 @@ def get_chore(chore_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+@_cached
 def list_chores(family_id: int, active_only: bool = False) -> list[dict]:
     query = "SELECT * FROM chores WHERE family_id = ?"
     if active_only:
@@ -827,6 +925,7 @@ def _chore_claimed(chore: dict, kid_id: int, family_id: int) -> bool:
         return row is not None
 
 
+@_cached
 def available_chores_for_kid(kid_id: int) -> list[dict]:
     """Active chores the kid can submit right now (period- and share-aware)."""
     kid = get_user(kid_id)
@@ -860,6 +959,7 @@ def submit_chore(kid_id: int, chore_id: int, note: str = "") -> int | None:
         )
 
 
+@_cached
 def pending_chore_submissions_for_parent(parent_id: int) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -879,6 +979,7 @@ def pending_chore_submissions_for_parent(parent_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+@_cached
 def kid_submissions(kid_id: int, limit: int = 25) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -975,6 +1076,7 @@ def set_penalty_active(penalty_id: int, active: bool) -> None:
         )
 
 
+@_cached
 def list_penalties(family_id: int, active_only: bool = False) -> list[dict]:
     query = "SELECT * FROM penalties WHERE family_id = ?"
     if active_only:
@@ -1077,6 +1179,7 @@ def get_redemption_option(option_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+@_cached
 def list_redemption_options(family_id: int, active_only: bool = False) -> list[dict]:
     query = "SELECT * FROM redemption_options WHERE family_id = ?"
     if active_only:
@@ -1089,6 +1192,7 @@ def list_redemption_options(family_id: int, active_only: bool = False) -> list[d
 
 # --- Per-child rate overrides ----------------------------------------------
 
+@_cached
 def effective_rate(option_id: int, kid_id: int) -> float | None:
     """The bucks-per-unit rate for this kid: their override, else the default.
 
@@ -1204,6 +1308,7 @@ def redemption_cost(bucks_per_unit: float, units: float) -> int:
     return _redemption_cost(bucks_per_unit, units)
 
 
+@_cached
 def pending_redemptions_for_parent(parent_id: int) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -1224,6 +1329,7 @@ def pending_redemptions_for_parent(parent_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+@_cached
 def kid_redemptions(kid_id: int, limit: int = 25) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -1292,6 +1398,7 @@ def reject_redemption(request_id: int, reviewer_id: int) -> bool:
 
 # --- Aggregate counts ------------------------------------------------------
 
+@_cached
 def outstanding_approvals_for_parent(parent_id: int) -> int:
     with get_connection() as conn:
         chores = conn.execute(
@@ -1347,6 +1454,7 @@ def mark_redemption_paid(request_id: int, paid: bool = True) -> None:
         )
 
 
+@_cached
 def pocket_money_redemptions(kid_id: int, month: str | None = None) -> list[dict]:
     """Approved real-money redemptions for a kid, newest first. `month` filters
     to a 'YYYY-MM' by approval date."""
@@ -1379,6 +1487,7 @@ def pocket_money_month_total(kid_id: int, month: str) -> dict:
     }
 
 
+@_cached
 def pocket_money_monthly_history(kid_id: int) -> list[dict]:
     """Totals grouped by month (newest first): month, units, count, paid_count."""
     agg: dict[str, dict] = {}
