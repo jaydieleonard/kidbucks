@@ -144,7 +144,10 @@ def _get_pg_pool():
                 _pg_pool = ConnectionPool(
                     _database_url(),
                     min_size=1, max_size=5, timeout=10, max_idle=120,
-                    kwargs={"autocommit": False, "row_factory": _pg_row_factory},
+                    # prepare_threshold=None disables prepared statements, which
+                    # are incompatible with Neon's PgBouncer pooler endpoint.
+                    kwargs={"autocommit": False, "row_factory": _pg_row_factory,
+                            "prepare_threshold": None},
                     open=True,
                 )
             except Exception:
@@ -241,7 +244,8 @@ def get_connection() -> _Conn:
         # Fallback: direct connection if the pool couldn't be created.
         import psycopg
         raw = psycopg.connect(
-            _database_url(), autocommit=False, row_factory=_pg_row_factory
+            _database_url(), autocommit=False, row_factory=_pg_row_factory,
+            prepare_threshold=None,
         )
         return _Conn(raw, postgres=True)
 
