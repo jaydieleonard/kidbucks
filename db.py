@@ -1149,9 +1149,11 @@ def clear_kid_rate(option_id: int, kid_id: int) -> None:
 def request_redemption(kid_id: int, option_id: int, units: float) -> int | None:
     """Kid asks to convert bucks. Cost is snapshotted; awaits parent approval.
 
-    Balances are allowed to go negative, so this no longer blocks on
-    affordability. Returns request id, or None if the option is missing/inactive
-    or units are non-positive.
+    A kid can never redeem into the negative: this is blocked when the cost
+    exceeds the current balance (which also blocks any redemption while the
+    balance is already zero or negative). Only parent penalties/demerits may
+    push a balance below zero. Returns request id, or None if the option is
+    missing/inactive, units are non-positive, or the kid can't afford it.
     """
     if units <= 0:
         return None
@@ -1173,6 +1175,12 @@ def request_redemption(kid_id: int, option_id: int, units: float) -> int | None:
             if ov:
                 rate = ov[0]
         cost = _redemption_cost(rate, units)
+        balance = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE kid_id = ?",
+            (kid_id,),
+        ).fetchone()[0]
+        if cost > balance:
+            return None
         return conn.insert(
             """
             INSERT INTO redemption_requests (kid_id, option_id, option_name, units,
@@ -1235,8 +1243,9 @@ def kid_redemptions(kid_id: int, limit: int = 25) -> list[dict]:
 def approve_redemption(request_id: int, reviewer_id: int) -> tuple[bool, str]:
     """Approve a redemption, deducting the bucks.
 
-    Balances may go negative, so approval is never blocked on affordability.
-    Returns (ok, message).
+    Re-checks the balance at approval time (it may have dropped since the
+    request, e.g. after a penalty) and refuses if it would go negative — a
+    redemption must never push a kid below zero. Returns (ok, message).
     """
     with get_connection() as conn:
         req = conn.execute(
@@ -1245,6 +1254,12 @@ def approve_redemption(request_id: int, reviewer_id: int) -> tuple[bool, str]:
         ).fetchone()
         if not req:
             return False, "Request no longer pending."
+        balance = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE kid_id = ?",
+            (req["kid_id"],),
+        ).fetchone()[0]
+        if req["bucks_spent"] > balance:
+            return False, "Kid no longer has enough bucks for this redemption."
         conn.execute(
             "UPDATE redemption_requests SET status = 'approved', reviewed_by = ?, "
             "reviewed_at = ? WHERE id = ?",
