@@ -71,14 +71,85 @@ _inject_google_analytics()
 # secrets or the environment; otherwise fall back to a local SQLite file. Setting
 # it before init_db() ensures db.py picks the right backend.
 try:
-    if not os.environ.get("DATABASE_URL") and "DATABASE_URL" in st.secrets:
-        os.environ["DATABASE_URL"] = st.secrets["DATABASE_URL"]
+    for _key in ("DATABASE_URL", "KIDBUCKS_SECRET"):
+        if not os.environ.get(_key) and _key in st.secrets:
+            os.environ[_key] = st.secrets[_key]
 except Exception:
     pass
 
 db.init_db()
 
 EMOJI_CHOICES = ["🙂", "😀", "😎", "🦄", "🐯", "🦖", "🚀", "⚽", "🎮", "🌟", "🐶", "🐱"]
+
+# --- Persistent "stay logged in" via a real browser cookie -----------------
+# Uses a proper cookie component (reliable on Streamlit Cloud, unlike the
+# sandboxed-frame trick). Everything degrades to normal login if the library or
+# browser cookie is unavailable.
+try:
+    from streamlit_cookies_controller import CookieController
+    _cookies = CookieController()
+except Exception:
+    _cookies = None
+
+AUTH_COOKIE = "kidbucks_auth"
+FAMILY_COOKIE = "kidbucks_family"
+
+
+def _cookie_get(name: str):
+    if _cookies is None:
+        return None
+    try:
+        return _cookies.get(name)
+    except Exception:
+        return None
+
+
+def _cookie_set(name: str, value: str, max_age: int) -> None:
+    if _cookies is None:
+        return
+    try:
+        _cookies.set(name, value, max_age=max_age, same_site="lax")
+    except Exception:
+        pass
+
+
+def _cookie_del(name: str) -> None:
+    if _cookies is None:
+        return
+    try:
+        _cookies.remove(name)
+    except Exception:
+        pass
+
+
+def _refresh_cookies(su: dict) -> None:
+    """(Re)write the login + family cookies, extending their lifetime on use."""
+    _cookie_set(AUTH_COOKIE, auth.make_login_token(su["id"], su["family_id"]),
+                auth.LOGIN_TOKEN_TTL_SECONDS)
+    if su.get("family_code"):
+        _cookie_set(FAMILY_COOKIE, su["family_code"], auth.LOGIN_TOKEN_TTL_SECONDS)
+
+
+def _finish_login(row: dict) -> None:
+    """Log a user in and remember them on this device for next time."""
+    auth.login(row)
+    _refresh_cookies(auth.current_user())
+    st.session_state["_cookies_fresh"] = True
+    st.rerun()
+
+
+def _try_cookie_login() -> None:
+    """Silently log in from the saved cookie, if it's present and valid."""
+    token = _cookie_get(AUTH_COOKIE)
+    if not token:
+        return
+    parsed = auth.read_login_token(token)
+    if not parsed:
+        return
+    uid, fid = parsed
+    row = db.get_user(uid)
+    if row and row["family_id"] == fid:
+        auth.login(row)
 
 
 # --- Login / register screen -----------------------------------------------
@@ -92,48 +163,17 @@ def _brand_header() -> None:
 
 
 def _persist_family(code: str) -> None:
-    """Best-effort: remember this family on the device (cookie + localStorage) so
-    the code doesn't have to be retyped next visit. Safe no-op if the browser
-    blocks it."""
-    safe = code.replace('"', "").replace("'", "").replace("\\", "")
-    components.html(
-        f"""
-        <script>
-          try {{
-            document.cookie = "kidbucks_family={safe}; max-age=31536000; path=/; SameSite=Lax";
-            window.localStorage.setItem("kidbucks_family", "{safe}");
-          }} catch (e) {{}}
-        </script>
-        """,
-        height=0,
-    )
+    """Remember this family on the device so the code isn't retyped next visit."""
+    _cookie_set(FAMILY_COOKIE, code, auth.LOGIN_TOKEN_TTL_SECONDS)
 
 
 def _forget_family() -> None:
-    components.html(
-        """
-        <script>
-          try {
-            document.cookie = "kidbucks_family=; max-age=0; path=/";
-            window.localStorage.removeItem("kidbucks_family");
-          } catch (e) {}
-        </script>
-        """,
-        height=0,
-    )
+    _cookie_del(FAMILY_COOKIE)
 
 
 def _remembered_code() -> str:
     """The family code saved on this device from a previous visit (or '')."""
-    try:
-        cookie = st.context.headers.get("Cookie", "") or ""
-    except Exception:
-        return ""
-    for part in cookie.split(";"):
-        key, _, value = part.strip().partition("=")
-        if key == "kidbucks_family" and value:
-            return value.strip()
-    return ""
+    return _cookie_get(FAMILY_COOKIE) or ""
 
 
 def _resolve_family() -> dict | None:
@@ -204,8 +244,7 @@ def _login_tab() -> None:
             if st.form_submit_button("Log in", width="stretch"):
                 user = auth.authenticate_kid(family["id"], name, pin)
                 if user:
-                    auth.login(user)
-                    st.rerun()
+                    _finish_login(user)
                 else:
                     st.error("Wrong PIN. Try again.")
     else:
@@ -223,8 +262,7 @@ def _login_tab() -> None:
                     family["id"], parent["username"], password
                 )
                 if user:
-                    auth.login(user)
-                    st.rerun()
+                    _finish_login(user)
                 else:
                     st.error("Wrong password. Try again.")
 
@@ -266,8 +304,7 @@ def _create_family_form() -> None:
                     username=username.strip(), is_admin=True, emoji=emoji,
                 )
                 st.session_state["just_created_code"] = code
-                auth.login(db.get_user(uid))
-                st.rerun()
+                _finish_login(db.get_user(uid))
 
 
 def _join_family_form() -> None:
@@ -318,8 +355,7 @@ def _do_join(code, role, name, emoji, username, password, confirm) -> None:
             return
         secret_hash, salt = auth.hash_secret(password)
         uid = db.create_user(fam_id, name.strip(), "kid", secret_hash, salt, emoji=emoji)
-    auth.login(db.get_user(uid))
-    st.rerun()
+    _finish_login(db.get_user(uid))
 
 
 def _login_screen() -> None:
@@ -332,6 +368,15 @@ def _login_screen() -> None:
             _login_tab()
         with tab_register:
             _register_tab()
+        with st.expander("📲 Add KidBucks to your iPhone home screen"):
+            st.markdown(
+                "1. Open this page in **Safari**.\n"
+                "2. Tap the **Share** button (a square with an arrow).\n"
+                "3. Choose **Add to Home Screen** → **Add**.\n\n"
+                "The icon remembers your family, so next time just tap your name "
+                "and PIN — no family code to type. You'll also stay signed in for "
+                "up to a week."
+            )
 
 
 # --- Logged-in router ------------------------------------------------------
@@ -369,14 +414,19 @@ def _build_navigation(user: dict):
 
 
 def _sidebar_account(user: dict) -> None:
-    # Remember this family on the device so the next visit skips the code entry.
-    _persist_family(user["family_code"])
+    # Refresh the login/family cookies once per session so the "stay signed in"
+    # window keeps rolling forward while the app is used.
+    if not st.session_state.get("_cookies_fresh"):
+        _refresh_cookies(user)
+        st.session_state["_cookies_fresh"] = True
     with st.sidebar:
         st.markdown(f"### {user['emoji']} {user['name']}")
         role_label = "Admin parent" if user["is_admin"] else user["role"].capitalize()
         st.caption(role_label)
         st.caption(f"👨‍👩‍👧‍👦 {user['family_name']}  ·  `{user['family_code']}`")
         if st.button("Log out", width="stretch"):
+            _cookie_del(AUTH_COOKIE)
+            st.session_state.pop("_cookies_fresh", None)
             auth.logout()
             st.rerun()
 
@@ -384,6 +434,9 @@ def _sidebar_account(user: dict) -> None:
 # --- Main ------------------------------------------------------------------
 
 user = auth.current_user()
+if user is None:
+    _try_cookie_login()          # auto-login from the saved cookie if present
+    user = auth.current_user()
 if user is None:
     _login_screen()
 else:

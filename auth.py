@@ -12,13 +12,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
+import time
 
 import streamlit as st
 
 import db
 
 _PBKDF2_ROUNDS = 200_000
+
+# "Stay logged in" token lifetime. Note: on iOS Safari, script-set cookies are
+# capped to ~7 days of inactivity regardless of this, so kids there stay signed
+# in up to a week; the home-screen icon still carries the family code after that.
+LOGIN_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 
 # Currency glyph shown throughout the app (KidBucks = ₿).
 BUCK = "₿"
@@ -118,6 +125,41 @@ def authenticate_kid(family_id: int, name: str, pin: str) -> dict | None:
     if row and verify_secret(pin, row["salt"], row["secret_hash"]):
         return row
     return None
+
+
+# --- "Stay logged in" tokens ------------------------------------------------
+# A signed token stored in a browser cookie so a device can re-open the app
+# already logged in. Signed (HMAC) so it can't be edited to impersonate another
+# user. Set KIDBUCKS_SECRET (env var / Streamlit secret) in production.
+
+def _login_secret() -> str:
+    return os.environ.get("KIDBUCKS_SECRET", "kidbucks-insecure-default-secret")
+
+
+def make_login_token(user_id: int, family_id: int) -> str:
+    issued = int(time.time())
+    msg = f"{user_id}.{family_id}.{issued}"
+    sig = hmac.new(
+        _login_secret().encode(), msg.encode(), hashlib.sha256
+    ).hexdigest()[:32]
+    return f"{msg}.{sig}"
+
+
+def read_login_token(token: str) -> tuple[int, int] | None:
+    """Return (user_id, family_id) if the token is valid & unexpired, else None."""
+    try:
+        user_id, family_id, issued, sig = token.split(".")
+        msg = f"{user_id}.{family_id}.{issued}"
+        expected = hmac.new(
+            _login_secret().encode(), msg.encode(), hashlib.sha256
+        ).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        if int(time.time()) - int(issued) > LOGIN_TOKEN_TTL_SECONDS:
+            return None
+        return int(user_id), int(family_id)
+    except Exception:
+        return None
 
 
 # --- Page guards -----------------------------------------------------------
