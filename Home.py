@@ -109,9 +109,9 @@ _inject_google_analytics()
 # secrets or the environment; otherwise fall back to a local SQLite file. Setting
 # it before init_db() ensures db.py picks the right backend.
 try:
-    for _key in ("DATABASE_URL", "KIDBUCKS_SECRET"):
+    for _key in ("DATABASE_URL", "KIDBUCKS_SECRET", "KIDBUCKS_DISABLE_POOL"):
         if not os.environ.get(_key) and _key in st.secrets:
-            os.environ[_key] = st.secrets[_key]
+            os.environ[_key] = str(st.secrets[_key])
 except Exception:
     pass
 

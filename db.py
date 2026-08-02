@@ -135,6 +135,10 @@ _pool_lock = threading.Lock()
 
 def _get_pg_pool():
     global _pg_pool, _pg_pool_failed
+    # Kill switch: set KIDBUCKS_DISABLE_POOL (env / Streamlit secret) to skip the
+    # pool entirely and use direct connections — no code change needed.
+    if os.environ.get("KIDBUCKS_DISABLE_POOL"):
+        return None
     if _pg_pool is not None or _pg_pool_failed:
         return _pg_pool
     with _pool_lock:
@@ -143,16 +147,32 @@ def _get_pg_pool():
                 from psycopg_pool import ConnectionPool
                 _pg_pool = ConnectionPool(
                     _database_url(),
-                    min_size=1, max_size=5, timeout=10, max_idle=120,
+                    # min_size=0: connect lazily on demand (avoids a background
+                    # worker that can stall app startup). check: validate/replace
+                    # stale connections (Neon drops them when it auto-suspends).
+                    min_size=0, max_size=5, timeout=6, max_idle=120,
                     # prepare_threshold=None disables prepared statements, which
                     # are incompatible with Neon's PgBouncer pooler endpoint.
                     kwargs={"autocommit": False, "row_factory": _pg_row_factory,
                             "prepare_threshold": None},
+                    check=ConnectionPool.check_connection,
                     open=True,
                 )
             except Exception:
                 _pg_pool_failed = True
     return _pg_pool
+
+
+def _disable_pg_pool() -> None:
+    """Stop using the pool for the rest of this process (fall back to direct)."""
+    global _pg_pool, _pg_pool_failed
+    _pg_pool_failed = True
+    pool, _pg_pool = _pg_pool, None
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception:
+            pass
 
 
 class _Conn:
@@ -240,12 +260,18 @@ def get_connection() -> _Conn:
     if is_postgres():
         pool = _get_pg_pool()
         if pool is not None:
-            return _Conn(pool.getconn(), postgres=True, pool=pool)
-        # Fallback: direct connection if the pool couldn't be created.
+            try:
+                raw = pool.getconn(timeout=6)
+                return _Conn(raw, postgres=True, pool=pool)
+            except Exception:
+                # Pool can't serve a connection: stop using it and go direct so
+                # the app keeps working (this is what ran before pooling).
+                _disable_pg_pool()
+        # Direct connection — the fallback whenever the pool is unavailable.
         import psycopg
         raw = psycopg.connect(
             _database_url(), autocommit=False, row_factory=_pg_row_factory,
-            prepare_threshold=None,
+            prepare_threshold=None, connect_timeout=10,
         )
         return _Conn(raw, postgres=True)
 
