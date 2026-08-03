@@ -268,10 +268,12 @@ def get_connection() -> _Conn:
                 # the app keeps working (this is what ran before pooling).
                 _disable_pg_pool()
         # Direct connection — the fallback whenever the pool is unavailable.
+        # No connect_timeout: allow Neon's cold-start wake to take as long as it
+        # needs (matching the behaviour that worked before pooling).
         import psycopg
         raw = psycopg.connect(
             _database_url(), autocommit=False, row_factory=_pg_row_factory,
-            prepare_threshold=None, connect_timeout=10,
+            prepare_threshold=None,
         )
         return _Conn(raw, postgres=True)
 
