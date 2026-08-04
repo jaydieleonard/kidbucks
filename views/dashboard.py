@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import calendar
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
@@ -9,11 +12,38 @@ import auth
 import db
 
 user = auth.require("parent")
+fam_id = user["family_id"]
 
 st.title("📊 Parent Dashboard")
 
 kids = db.list_kids_for_parent(user["id"])
 outstanding = db.outstanding_approvals_for_parent(user["id"])
+
+# --- Pocket-money projections, per kid + totals ----------------------------
+# "Due" = value in pocket money if a kid converts ALL their KidBucks now.
+# "Projected" = KidBucks earned so far this month / days elapsed × days in month,
+# converted to pocket money — an estimate of the month's payout at this pace.
+pm_opt = db.pocket_money_option(fam_id)
+pm_unit = pm_opt["unit"] if pm_opt else "R"
+month = db.current_month()
+_now = datetime.now()
+_days_in_month = calendar.monthrange(_now.year, _now.month)[1]
+_days_so_far = _now.day
+
+pm_due: dict[int, float] = {}
+pm_proj: dict[int, float] = {}
+for k in kids:
+    due = proj = 0.0
+    if pm_opt:
+        rate = db.effective_rate(pm_opt["id"], k["id"]) or pm_opt["bucks_per_unit"]
+        if rate and rate > 0:
+            due = max(0, k["balance"]) / rate
+            earned = db.earned_this_month(k["id"], month)
+            proj = (earned / _days_so_far * _days_in_month) / rate if _days_so_far else 0.0
+    pm_due[k["id"]] = due
+    pm_proj[k["id"]] = proj
+total_due = sum(pm_due.values())
+total_proj = sum(pm_proj.values())
 
 top1, top2, top3 = st.columns(3)
 top1.metric("Your kids", len(kids))
@@ -21,6 +51,18 @@ top2.metric("Outstanding approvals", outstanding)
 top3.metric(
     "Total in wallets",
     auth.fmt_bucks(sum(k["balance"] for k in kids)),
+)
+
+pm1, pm2 = st.columns(2)
+pm1.metric(
+    "Pocket money due (if all cashed out)",
+    db.fmt_units(round(total_due, 2), pm_unit),
+)
+pm2.metric(
+    f"Projected pocket money — {db.month_label(month)}",
+    db.fmt_units(round(total_proj, 2), pm_unit),
+    help="Estimate: KidBucks earned so far this month ÷ days so far × days in "
+         "the month, converted to pocket money at each kid's rate.",
 )
 
 if outstanding:
@@ -81,11 +123,20 @@ st.divider()
 st.subheader("Your kids")
 if user["is_admin"]:
     st.caption("Forgot a PIN? Reset it here and tell them the new one.")
+def _pm_caption(kid_id: int) -> str:
+    return (
+        f"💵 Due if cashed out: {db.fmt_units(round(pm_due[kid_id], 2), pm_unit)}  ·  "
+        f"Projected {db.month_label(month)}: "
+        f"{db.fmt_units(round(pm_proj[kid_id], 2), pm_unit)}"
+    )
+
+
 for k in kids:
     with st.container(border=True):
         if user["is_admin"]:
             c1, c2 = st.columns([3, 1])
             c1.markdown(f"**{k['emoji']} {k['name']}** — {auth.fmt_bucks(k['balance'])}")
+            c1.caption(_pm_caption(k["id"]))
             with c2.popover("🔑 Reset PIN", width="stretch"):
                 with st.form(f"pinreset_{k['id']}"):
                     new_pin = st.text_input(
@@ -102,6 +153,7 @@ for k in kids:
                             )
         else:
             st.markdown(f"**{k['emoji']} {k['name']}** — {auth.fmt_bucks(k['balance'])}")
+            st.caption(_pm_caption(k["id"]))
 
 st.divider()
 

@@ -1534,3 +1534,31 @@ def pocket_money_monthly_history(kid_id: int) -> list[dict]:
         a["count"] += 1
         a["paid_count"] += 1 if r["paid"] else 0
     return sorted(agg.values(), key=lambda x: x["month"], reverse=True)
+
+
+def pocket_money_option(family_id: int) -> dict | None:
+    """The active redemption option used for pocket money (real money).
+
+    Prefers one literally named "Pocket Money", else the first currency-unit
+    option. Used to value KidBucks in Rand for the dashboard projections.
+    """
+    opts = list_redemption_options(family_id, active_only=True)
+    named = [o for o in opts if o["name"].strip().lower() == "pocket money"]
+    if named:
+        return named[0]
+    for o in opts:
+        if is_currency_unit(o["unit"]):
+            return o
+    return None
+
+
+@_cached
+def earned_this_month(kid_id: int, month: str) -> int:
+    """KidBucks earned (positive transactions) by a kid in a given 'YYYY-MM'."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions "
+            "WHERE kid_id = ? AND amount > 0 AND substr(created_at, 1, 7) = ?",
+            (kid_id, month),
+        ).fetchone()
+    return row[0]
