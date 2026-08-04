@@ -23,7 +23,9 @@ outstanding = db.outstanding_approvals_for_parent(user["id"])
 # "Due" = value in pocket money if a kid converts ALL their KidBucks now.
 # "Projected" = KidBucks earned so far this month / days elapsed × days in month,
 # converted to pocket money — an estimate of the month's payout at this pace.
-pm_opt = db.pocket_money_option(fam_id)
+# hasattr guard: if a deploy ever ships this file ahead of db.py, skip the
+# pocket-money metrics gracefully instead of crashing the whole dashboard.
+pm_opt = db.pocket_money_option(fam_id) if hasattr(db, "pocket_money_option") else None
 pm_unit = pm_opt["unit"] if pm_opt else "R"
 month = db.current_month()
 _now = datetime.now()
