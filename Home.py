@@ -341,6 +341,7 @@ def _create_family_form() -> None:
                     fam_id, name.strip(), "parent", secret_hash, salt,
                     username=username.strip(), is_admin=True, emoji=emoji,
                 )
+                db.seed_family_defaults(fam_id, created_by=uid)  # starter content
                 st.session_state["just_created_code"] = code
                 _finish_login(db.get_user(uid))
 

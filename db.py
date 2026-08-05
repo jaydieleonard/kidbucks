@@ -64,6 +64,40 @@ RECURRENCE_LABELS = {
 # Family-code alphabet with ambiguous characters (I, L, O, 0, 1) removed.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
+# --- Starter content given to every brand-new family (tweak freely) --------
+# Applied once when a family is created, so they aren't staring at blank Chores/
+# Penalties/Redemption pages (and so redeeming + the pocket-money dashboard work
+# out of the box). Families can edit/delete/add anything afterwards.
+DEFAULT_CHORES = [
+    # name, value, recurrence, shared, description
+    ("Make your bed", 5, "daily", False, "Every morning."),
+    ("Wash the dishes", 10, "daily", False, "After dinner."),
+    ("Tidy your room", 15, "weekly", False, ""),
+    ("Take out the bins", 20, "weekly", True, "Family task — whoever does it first!"),
+]
+DEFAULT_PENALTIES = [
+    # name, value, description
+    ("Back-talk", 10, "Being rude to a grown-up."),
+    ("Missed homework", 15, "Homework not done on time."),
+    ("Left a mess", 5, ""),
+]
+DEFAULT_REDEMPTIONS = [
+    # name, unit, bucks_per_unit, per_child
+    ("Pocket Money", "R", 10.0, True),    # 10 KidBucks = R1, per-child rates on
+    ("Screen Time", "min", 2.0, False),   # 2 KidBucks = 1 minute
+]
+
+
+def seed_family_defaults(family_id: int, created_by: int | None = None) -> None:
+    """Give a new family the starter chores, penalties and redemption options."""
+    for name, value, recurrence, shared, desc in DEFAULT_CHORES:
+        create_chore(family_id, name, value, recurrence, shared, desc,
+                     created_by=created_by)
+    for name, value, desc in DEFAULT_PENALTIES:
+        create_penalty(family_id, name, value, desc, created_by=created_by)
+    for name, unit, rate, per_child in DEFAULT_REDEMPTIONS:
+        create_redemption_option(family_id, name, unit, rate, per_child)
+
 
 # --- Database backend: SQLite locally, Postgres (Neon) when DATABASE_URL set --
 
