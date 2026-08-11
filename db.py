@@ -515,6 +515,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "redemption_requests", "paid",
                                "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "redemption_requests", "paid_at", "TEXT")
+        _add_column_if_missing(conn, "users", "last_seen_at", "TEXT")
 
 
 def _add_column_if_missing(conn, table: str, column: str, coldef: str) -> None:
@@ -701,6 +702,14 @@ def reset_secret(user_id: int, secret_hash: str, salt: str) -> None:
         conn.execute(
             "UPDATE users SET secret_hash = ?, salt = ? WHERE id = ?",
             (secret_hash, salt, user_id),
+        )
+
+
+def touch_last_seen(user_id: int) -> None:
+    """Mark 'now' as the moment this user last caught up on their updates."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET last_seen_at = ? WHERE id = ?", (_now(), user_id)
         )
 
 
@@ -1061,6 +1070,53 @@ def kid_submissions(kid_id: int, limit: int = 25) -> list[dict]:
             (kid_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+@_cached
+def kid_reviewed_items(kid_id: int, since: str | None = None,
+                       limit: int = 20) -> list[dict]:
+    """A kid's decided chores + redemptions (approved/declined), newest first.
+
+    If `since` is given, only items reviewed after that timestamp are returned
+    (used for the "new updates" badge). Each item: kind, title, status, amount,
+    detail, when.
+    """
+    where_c = ("s.kid_id = ? AND s.status IN ('approved', 'rejected') "
+               "AND s.reviewed_at IS NOT NULL")
+    where_r = ("r.kid_id = ? AND r.status IN ('approved', 'rejected') "
+               "AND r.reviewed_at IS NOT NULL")
+    params_c: list = [kid_id]
+    params_r: list = [kid_id]
+    if since:
+        where_c += " AND s.reviewed_at > ?"
+        params_c.append(since)
+        where_r += " AND r.reviewed_at > ?"
+        params_r.append(since)
+    with get_connection() as conn:
+        crows = conn.execute(
+            f"SELECT c.name AS title, s.status, s.value AS amount, s.reviewed_at "
+            f"FROM chore_submissions s JOIN chores c ON c.id = s.chore_id "
+            f"WHERE {where_c}",
+            params_c,
+        ).fetchall()
+        rrows = conn.execute(
+            f"SELECT r.option_name AS title, r.status, r.bucks_spent AS amount, "
+            f"r.units, r.unit_label, r.reviewed_at "
+            f"FROM redemption_requests r WHERE {where_r}",
+            params_r,
+        ).fetchall()
+    items = [
+        {"kind": "chore", "title": r["title"], "status": r["status"],
+         "amount": r["amount"], "detail": None, "when": r["reviewed_at"]}
+        for r in crows
+    ] + [
+        {"kind": "redemption", "title": r["title"], "status": r["status"],
+         "amount": r["amount"], "detail": fmt_units(r["units"], r["unit_label"]),
+         "when": r["reviewed_at"]}
+        for r in rrows
+    ]
+    items.sort(key=lambda x: x["when"] or "", reverse=True)
+    return items[:limit]
 
 
 def approve_chore_submission(submission_id: int, reviewer_id: int) -> bool:

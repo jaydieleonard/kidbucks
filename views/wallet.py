@@ -14,6 +14,36 @@ summary = db.kid_summary(user["id"])
 
 st.title(f"{user['emoji']} {user['name']}'s Wallet")
 
+# --- Recent updates (chores/redemptions approved or declined) --------------
+_me = db.get_user(user["id"])
+_last_seen = _me.get("last_seen_at") if _me else None
+_recent = db.kid_reviewed_items(user["id"], limit=8)
+if _recent:
+    with st.container(border=True):
+        st.markdown("**🔔 Recent updates**")
+        for it in _recent:
+            icon = "✅" if it["status"] == "approved" else "❌"
+            is_new = _last_seen is None or (it["when"] and it["when"] > _last_seen)
+            tag = "  🆕" if is_new else ""
+            when = (it["when"] or "")[:10]
+            if it["kind"] == "chore":
+                if it["status"] == "approved":
+                    line = (f"{icon} Chore **{it['title']}** approved — "
+                            f"+{it['amount']} {auth.BUCK}")
+                else:
+                    line = f"{icon} Chore **{it['title']}** declined"
+            else:
+                if it["status"] == "approved":
+                    line = (f"{icon} **{it['title']}** {it['detail']} approved — "
+                            f"−{it['amount']} {auth.BUCK}")
+                else:
+                    line = f"{icon} **{it['title']}** {it['detail']} declined"
+            st.write(f"{line}  ·  _{when}_{tag}")
+    # Mark caught up (only writes when there's genuinely something new).
+    if any(_last_seen is None or (it["when"] and it["when"] > _last_seen)
+           for it in _recent):
+        db.touch_last_seen(user["id"])
+
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Balance", auth.fmt_bucks(summary["balance"]))
 col2.metric("Earned (all time)", auth.fmt_bucks(summary["earned"]))

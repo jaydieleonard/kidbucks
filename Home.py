@@ -463,6 +463,24 @@ def _sidebar_account(user: dict) -> None:
         role_label = "Admin parent" if user["is_admin"] else user["role"].capitalize()
         st.caption(role_label)
         st.caption(f"👨‍👩‍👧‍👦 {user['family_name']}  ·  `{user['family_code']}`")
+
+        # --- Notifications ---------------------------------------------------
+        if user["role"] == "parent":
+            pending = db.outstanding_approvals_for_parent(user["id"])
+            if pending:
+                if st.button(f"🔔 {pending} pending approval(s)", width="stretch"):
+                    st.switch_page("views/approvals.py")
+        else:
+            me = db.get_user(user["id"])
+            last_seen = me.get("last_seen_at") if me else None
+            new_items = db.kid_reviewed_items(user["id"], since=last_seen)
+            if new_items:
+                n = len(new_items)
+                label = f"🔔 {n} new update{'s' if n != 1 else ''}"
+                if st.button(label, width="stretch"):
+                    st.switch_page("views/wallet.py")
+
+        st.divider()
         if st.button("Log out", width="stretch"):
             _cookie_del(AUTH_COOKIE)
             st.session_state.pop("_cookies_fresh", None)
