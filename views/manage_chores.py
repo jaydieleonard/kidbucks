@@ -106,7 +106,8 @@ st.divider()
 
 # --- Change log ------------------------------------------------------------
 with st.expander("📜 Change log — who changed what"):
-    entries = db.chore_audit_log(fam_id, limit=50)
+    # hasattr guard: tolerate a deploy where this file is ahead of db.py.
+    entries = db.chore_audit_log(fam_id, limit=50) if hasattr(db, "chore_audit_log") else []
     if not entries:
         st.caption("No changes logged yet.")
     else:
