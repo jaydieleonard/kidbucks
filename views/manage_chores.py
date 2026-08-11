@@ -84,13 +84,13 @@ for c in active:
                 if st.form_submit_button("Save", width="stretch"):
                     db.update_chore(
                         c["id"], new_name.strip(), int(new_value), new_rec,
-                        new_shared, new_desc.strip(),
+                        new_shared, new_desc.strip(), actor_id=user["id"],
                     )
                     st.success("Saved.")
                     st.rerun()
             with b2:
                 if st.form_submit_button("Archive", width="stretch"):
-                    db.set_chore_active(c["id"], False)
+                    db.set_chore_active(c["id"], False, actor_id=user["id"])
                     st.rerun()
 
 if archived:
@@ -99,5 +99,23 @@ if archived:
             col1, col2 = st.columns([4, 1])
             col1.write(f"~~{c['name']}~~ — {auth.fmt_bucks(c['value'])}")
             if col2.button("Restore", key=f"restore_{c['id']}"):
-                db.set_chore_active(c["id"], True)
+                db.set_chore_active(c["id"], True, actor_id=user["id"])
                 st.rerun()
+
+st.divider()
+
+# --- Change log ------------------------------------------------------------
+with st.expander("📜 Change log — who changed what"):
+    entries = db.chore_audit_log(fam_id, limit=50)
+    if not entries:
+        st.caption("No changes logged yet.")
+    else:
+        icons = {"created": "➕", "edited": "✏️", "archived": "🗄️", "restored": "♻️"}
+        for e in entries:
+            when = (e["created_at"] or "")[:16].replace("T", " ")
+            who = e["actor_name"] or "Someone"
+            icon = icons.get(e["action"], "•")
+            line = f"{icon} **{who}** {e['action']} “{e['chore_name']}”"
+            if e["detail"]:
+                line += f" — {e['detail']}"
+            st.write(f"{line}  \n_{when}_")

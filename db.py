@@ -51,6 +51,9 @@ TXN_ADJUSTMENT = "adjustment"
 TXN_BONUS = "bonus"        # spontaneous reward for good behaviour
 TXN_DEMERIT = "demerit"    # spontaneous one-off deduction
 
+# Currency glyph for KidBucks (kept here too so db-layer logs can use it).
+BUCK = "₿"
+
 # Chore recurrence values and their human labels.
 RECURRENCE_ONCE = "once"
 RECURRENCE_OPTIONS = ["once", "daily", "weekly", "monthly"]
@@ -502,6 +505,25 @@ def init_db() -> None:
             """
         )
 
+        # Audit trail for chore changes: who created / edited / archived /
+        # restored a chore, what changed, and when. Names are snapshotted so the
+        # log stays readable regardless of later edits.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chore_audit (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                family_id  INTEGER NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+                chore_id   INTEGER,
+                chore_name TEXT    NOT NULL DEFAULT '',
+                actor_id   INTEGER,
+                actor_name TEXT    NOT NULL DEFAULT '',
+                action     TEXT    NOT NULL,
+                detail     TEXT    NOT NULL DEFAULT '',
+                created_at TEXT    NOT NULL
+            )
+            """
+        )
+
         # Lightweight migrations so an already-deployed database (e.g. Neon) gains
         # newer columns without a manual step. CREATE TABLE IF NOT EXISTS never
         # alters an existing table, so we add any missing columns here.
@@ -895,6 +917,22 @@ def _period_key(recurrence: str, dt: datetime) -> str:
     return ""
 
 
+def _log_chore_audit(conn, family_id, chore_id, chore_name, actor_id, action, detail):
+    """Write one chore-audit row using the caller's connection (same txn)."""
+    actor_name = ""
+    if actor_id:
+        a = conn.execute("SELECT name FROM users WHERE id = ?", (actor_id,)).fetchone()
+        actor_name = a["name"] if a else ""
+    conn.execute(
+        """
+        INSERT INTO chore_audit (family_id, chore_id, chore_name, actor_id,
+                                 actor_name, action, detail, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (family_id, chore_id, chore_name, actor_id, actor_name, action, detail, _now()),
+    )
+
+
 def create_chore(
     family_id: int,
     name: str,
@@ -905,7 +943,7 @@ def create_chore(
     created_by: int | None = None,
 ) -> int:
     with get_connection() as conn:
-        return conn.insert(
+        cid = conn.insert(
             """
             INSERT INTO chores (family_id, name, description, value, recurrence,
                                 shared, active, created_by, created_at)
@@ -914,6 +952,10 @@ def create_chore(
             (family_id, name, description, value, recurrence, int(shared),
              created_by, _now()),
         )
+        _log_chore_audit(conn, family_id, cid, name, created_by, "created",
+                         f"{value} {BUCK}, {RECURRENCE_LABELS.get(recurrence, recurrence)}"
+                         + (", family task" if shared else ""))
+        return cid
 
 
 def update_chore(
@@ -923,8 +965,10 @@ def update_chore(
     recurrence: str,
     shared: bool,
     description: str = "",
+    actor_id: int | None = None,
 ) -> None:
     with get_connection() as conn:
+        old = conn.execute("SELECT * FROM chores WHERE id = ?", (chore_id,)).fetchone()
         conn.execute(
             """
             UPDATE chores
@@ -933,13 +977,35 @@ def update_chore(
             """,
             (name, description, value, recurrence, int(shared), chore_id),
         )
+        if old:
+            changes = []
+            if old["name"] != name:
+                changes.append(f"name “{old['name']}”→“{name}”")
+            if old["value"] != value:
+                changes.append(f"value {old['value']}→{value} {BUCK}")
+            if old["recurrence"] != recurrence:
+                changes.append(
+                    f"recurrence {RECURRENCE_LABELS.get(old['recurrence'], old['recurrence'])}"
+                    f"→{RECURRENCE_LABELS.get(recurrence, recurrence)}"
+                )
+            if bool(old["shared"]) != bool(shared):
+                changes.append("family task on" if shared else "family task off")
+            if (old["description"] or "") != (description or ""):
+                changes.append("description")
+            detail = ", ".join(changes) if changes else "no changes"
+            _log_chore_audit(conn, old["family_id"], chore_id, name, actor_id,
+                             "edited", detail)
 
 
-def set_chore_active(chore_id: int, active: bool) -> None:
+def set_chore_active(chore_id: int, active: bool, actor_id: int | None = None) -> None:
     with get_connection() as conn:
+        ch = conn.execute("SELECT * FROM chores WHERE id = ?", (chore_id,)).fetchone()
         conn.execute(
             "UPDATE chores SET active = ? WHERE id = ?", (int(active), chore_id)
         )
+        if ch:
+            _log_chore_audit(conn, ch["family_id"], chore_id, ch["name"], actor_id,
+                             "restored" if active else "archived", "")
 
 
 def get_chore(chore_id: int) -> dict | None:
@@ -956,6 +1022,17 @@ def list_chores(family_id: int, active_only: bool = False) -> list[dict]:
     query += " ORDER BY active DESC, name COLLATE NOCASE"
     with get_connection() as conn:
         rows = conn.execute(query, (family_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+@_cached
+def chore_audit_log(family_id: int, limit: int = 50) -> list[dict]:
+    """Who changed chores in this family (newest first)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM chore_audit WHERE family_id = ? ORDER BY id DESC LIMIT ?",
+            (family_id, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
