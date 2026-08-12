@@ -524,26 +524,48 @@ def init_db() -> None:
             """
         )
 
-        # Lightweight migrations so an already-deployed database (e.g. Neon) gains
-        # newer columns without a manual step. CREATE TABLE IF NOT EXISTS never
-        # alters an existing table, so we add any missing columns here.
-        _add_column_if_missing(conn, "chores", "recurrence",
-                               "TEXT NOT NULL DEFAULT 'once'")
-        _add_column_if_missing(conn, "chores", "shared", "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "chore_submissions", "period_key",
-                               "TEXT NOT NULL DEFAULT ''")
-        _add_column_if_missing(conn, "redemption_options", "per_child",
-                               "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "redemption_requests", "paid",
-                               "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "redemption_requests", "paid_at", "TEXT")
-        _add_column_if_missing(conn, "users", "last_seen_at", "TEXT")
+    # Column migrations run AFTER the create block, each in its OWN transaction,
+    # so a hiccup on one can't poison the others or crash startup (on Postgres a
+    # failed statement aborts the whole surrounding transaction).
+    _run_column_migrations()
+
+
+# Columns added to already-existing databases (e.g. Neon). CREATE TABLE IF NOT
+# EXISTS never alters an existing table, so any newer column is added here.
+_COLUMN_MIGRATIONS = [
+    ("chores", "recurrence", "TEXT NOT NULL DEFAULT 'once'"),
+    ("chores", "shared", "INTEGER NOT NULL DEFAULT 0"),
+    ("chore_submissions", "period_key", "TEXT NOT NULL DEFAULT ''"),
+    ("redemption_options", "per_child", "INTEGER NOT NULL DEFAULT 0"),
+    ("redemption_requests", "paid", "INTEGER NOT NULL DEFAULT 0"),
+    ("redemption_requests", "paid_at", "TEXT"),
+    ("users", "last_seen_at", "TEXT"),
+]
+
+
+def _run_column_migrations() -> None:
+    for table, column, coldef in _COLUMN_MIGRATIONS:
+        try:
+            with get_connection() as conn:
+                _add_column_if_missing(conn, table, column, coldef)
+        except Exception:
+            pass  # best-effort; never let a migration crash startup
 
 
 def _add_column_if_missing(conn, table: str, column: str, coldef: str) -> None:
-    """Add a column only if the table doesn't already have it (both backends)."""
+    """Add a column only if the table doesn't already have it (both backends).
+
+    Checks the catalog first (rather than relying on ADD COLUMN IF NOT EXISTS)
+    so no ALTER is issued at all when the column already exists.
+    """
     if is_postgres():
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coldef}")
+        exists = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = ? AND column_name = ?",
+            (table, column),
+        ).fetchone()
+        if not exists:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
     else:
         existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
         if column not in existing:
