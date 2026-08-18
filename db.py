@@ -45,6 +45,7 @@ from config import (
     TXN_ADJUSTMENT, TXN_BONUS, TXN_CHORE, TXN_DEMERIT, TXN_PENALTY, TXN_REDEMPTION,
 )
 from formatting import fmt_dt, fmt_units, is_currency_unit
+from models import Chore, Family, User
 
 # Resolve the DB path relative to THIS file so the app works no matter what
 # directory Streamlit is launched from.
@@ -566,21 +567,21 @@ def create_family(name: str) -> tuple[int, str]:
 
 
 @_cached
-def get_family(family_id: int) -> dict | None:
+def get_family(family_id: int) -> Family | None:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM families WHERE id = ?", (family_id,)
         ).fetchone()
-    return dict(row) if row else None
+    return Family.from_row(row)
 
 
 @_cached
-def get_family_by_code(code: str) -> dict | None:
+def get_family_by_code(code: str) -> Family | None:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM families WHERE code = ?", (code.strip().upper(),)
         ).fetchone()
-    return dict(row) if row else None
+    return Family.from_row(row)
 
 
 # --- Users -----------------------------------------------------------------
@@ -609,30 +610,30 @@ def create_user(
 
 
 @_cached
-def get_user(user_id: int) -> dict | None:
+def get_user(user_id: int) -> User | None:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    return User.from_row(row)
 
 
-def get_parent_by_username(family_id: int, username: str) -> dict | None:
+def get_parent_by_username(family_id: int, username: str) -> User | None:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM users WHERE role = 'parent' AND family_id = ? "
             "AND username = ? COLLATE NOCASE",
             (family_id, username),
         ).fetchone()
-    return dict(row) if row else None
+    return User.from_row(row)
 
 
-def get_kid_by_name(family_id: int, name: str) -> dict | None:
+def get_kid_by_name(family_id: int, name: str) -> User | None:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM users WHERE role = 'kid' AND family_id = ? "
             "AND name = ? COLLATE NOCASE",
             (family_id, name),
         ).fetchone()
-    return dict(row) if row else None
+    return User.from_row(row)
 
 
 def username_exists(family_id: int, username: str) -> bool:
@@ -657,14 +658,14 @@ def count_parents(family_id: int) -> int:
 
 
 @_cached
-def list_parents(family_id: int) -> list[dict]:
+def list_parents(family_id: int) -> list[User]:
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM users WHERE role = 'parent' AND family_id = ? "
             "ORDER BY name COLLATE NOCASE",
             (family_id,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [User.from_row(r) for r in rows]
 
 
 def update_user_profile(user_id: int, name: str, emoji: str) -> None:
@@ -972,21 +973,21 @@ def set_chore_active(chore_id: int, active: bool, actor_id: int | None = None) -
                              "restored" if active else "archived", "")
 
 
-def get_chore(chore_id: int) -> dict | None:
+def get_chore(chore_id: int) -> Chore | None:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM chores WHERE id = ?", (chore_id,)).fetchone()
-    return dict(row) if row else None
+    return Chore.from_row(row)
 
 
 @_cached
-def list_chores(family_id: int, active_only: bool = False) -> list[dict]:
+def list_chores(family_id: int, active_only: bool = False) -> list[Chore]:
     query = "SELECT * FROM chores WHERE family_id = ?"
     if active_only:
         query += " AND active = 1"
     query += " ORDER BY active DESC, name COLLATE NOCASE"
     with get_connection() as conn:
         rows = conn.execute(query, (family_id,)).fetchall()
-    return [dict(r) for r in rows]
+    return [Chore.from_row(r) for r in rows]
 
 
 @_cached
