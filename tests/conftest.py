@@ -20,13 +20,15 @@ os.environ.pop("DATABASE_URL", None)  # force the SQLite backend for tests
 
 import auth  # noqa: E402
 import db  # noqa: E402
+import engine  # noqa: E402
 import seed  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
     """Point the DB at a throwaway file and clear caches around each test."""
-    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    # get_connection() lives in engine and reads engine.DB_PATH, so patch there.
+    monkeypatch.setattr(engine, "DB_PATH", tmp_path / "test.db")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     db._clear_read_cache()
     yield

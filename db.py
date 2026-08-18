@@ -46,10 +46,14 @@ from config import (
 )
 from formatting import fmt_dt, fmt_units, is_currency_unit
 from models import Chore, Family, User
-
-# Resolve the DB path relative to THIS file so the app works no matter what
-# directory Streamlit is launched from.
-DB_PATH = Path(__file__).parent / "data" / "kidbucks.db"
+from engine import (
+    DB_PATH, _cached, _clear_read_cache, _now, get_connection, is_postgres,
+)
+from repositories.audit import _log_chore_audit, chore_audit_log
+from repositories.penalties import (
+    apply_penalty, create_penalty, list_penalties, set_penalty_active,
+    update_penalty,
+)
 
 
 def seed_family_defaults(family_id: int, created_by: int | None = None) -> None:
@@ -61,225 +65,6 @@ def seed_family_defaults(family_id: int, created_by: int | None = None) -> None:
         create_penalty(family_id, name, value, desc, created_by=created_by)
     for name, unit, rate, per_child in DEFAULT_REDEMPTIONS:
         create_redemption_option(family_id, name, unit, rate, per_child)
-
-
-# --- Database backend: SQLite locally, Postgres (Neon) when DATABASE_URL set --
-
-def _database_url() -> str:
-    """The Postgres connection string, if one is configured (else empty)."""
-    return os.environ.get("DATABASE_URL", "").strip()
-
-
-def is_postgres() -> bool:
-    return bool(_database_url())
-
-
-# --- Read-query caching (Streamlit only) -----------------------------------
-# Read functions are cached briefly to avoid re-hitting the DB on every rerun.
-# ANY write clears the cache (see _Conn.__exit__), so data is never stale beyond
-# a completed change. No-ops when Streamlit isn't running (e.g. seed.py).
-try:
-    import streamlit as _st
-except Exception:  # pragma: no cover
-    _st = None
-
-_CACHE_TTL_SECONDS = 10
-
-
-def _cached(fn):
-    if _st is None:
-        return fn
-    try:
-        return _st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner=False)(fn)
-    except Exception:
-        return fn
-
-
-def _clear_read_cache() -> None:
-    if _st is None:
-        return
-    try:
-        _st.cache_data.clear()
-    except Exception:
-        pass
-
-
-class _Row(dict):
-    """A dict row that also supports positional access (row[0]), like sqlite3.Row.
-
-    Lets the same query code run on both backends unchanged.
-    """
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return list(self.values())[key]
-        return super().__getitem__(key)
-
-
-def _pg_row_factory(cursor):
-    from psycopg.rows import dict_row
-    make_dict = dict_row(cursor)
-    return lambda values: _Row(make_dict(values))
-
-
-# A process-wide connection pool for Postgres, so we reuse warm connections
-# instead of doing a TLS handshake to the remote DB on every query (the main
-# cause of slow pages on Neon). Created lazily; falls back to direct connections
-# if the pool library/creation fails.
-_pg_pool = None
-_pg_pool_failed = False
-_pool_lock = threading.Lock()
-
-
-def _get_pg_pool():
-    global _pg_pool, _pg_pool_failed
-    # Kill switch: set KIDBUCKS_DISABLE_POOL (env / Streamlit secret) to skip the
-    # pool entirely and use direct connections — no code change needed.
-    if os.environ.get("KIDBUCKS_DISABLE_POOL"):
-        return None
-    if _pg_pool is not None or _pg_pool_failed:
-        return _pg_pool
-    with _pool_lock:
-        if _pg_pool is None and not _pg_pool_failed:
-            try:
-                from psycopg_pool import ConnectionPool
-                _pg_pool = ConnectionPool(
-                    _database_url(),
-                    # min_size=0: connect lazily on demand (avoids a background
-                    # worker that can stall app startup). check: validate/replace
-                    # stale connections (Neon drops them when it auto-suspends).
-                    min_size=0, max_size=5, timeout=6, max_idle=120,
-                    # prepare_threshold=None disables prepared statements, which
-                    # are incompatible with Neon's PgBouncer pooler endpoint.
-                    kwargs={"autocommit": False, "row_factory": _pg_row_factory,
-                            "prepare_threshold": None},
-                    check=ConnectionPool.check_connection,
-                    open=True,
-                )
-            except Exception:
-                _pg_pool_failed = True
-    return _pg_pool
-
-
-def _disable_pg_pool() -> None:
-    """Stop using the pool for the rest of this process (fall back to direct)."""
-    global _pg_pool, _pg_pool_failed
-    _pg_pool_failed = True
-    pool, _pg_pool = _pg_pool, None
-    if pool is not None:
-        try:
-            pool.close()
-        except Exception:
-            pass
-
-
-class _Conn:
-    """Uniform wrapper over sqlite3 / psycopg connections.
-
-    Translates our SQLite-flavoured SQL to Postgres on the fly (placeholders,
-    autoincrement, `INSERT OR IGNORE`, `COLLATE NOCASE`) so the rest of this
-    module is written once. Commits on clean exit, rolls back on error, and
-    clears the read cache whenever the block performed a write.
-    """
-
-    def __init__(self, raw, postgres: bool, pool=None):
-        self._raw = raw
-        self._pg = postgres
-        self._pool = pool
-        self._wrote = False
-
-    def _tr(self, sql: str) -> str:
-        if not self._pg:
-            return sql
-        sql = sql.replace(
-            "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY",
-        )
-        sql = sql.replace("COLLATE NOCASE", "")
-        if "INSERT OR IGNORE INTO" in sql:
-            sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
-            sql = sql + " ON CONFLICT DO NOTHING"
-        sql = sql.replace("?", "%s")
-        return sql
-
-    def _note_write(self, sql: str) -> None:
-        head = sql.strip().split(None, 1)
-        if head and head[0].upper() in {
-            "INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "CREATE", "DROP",
-        }:
-            self._wrote = True
-
-    def execute(self, sql, params=()):
-        self._note_write(sql)
-        return self._raw.execute(self._tr(sql), tuple(params))
-
-    def executemany(self, sql, seq):
-        self._wrote = True
-        cur = self._raw.cursor()
-        cur.executemany(self._tr(sql), [tuple(p) for p in seq])
-        return cur
-
-    def insert(self, sql, params=()):
-        """Run an INSERT and return the new row's `id` (both backends)."""
-        self._wrote = True
-        if self._pg:
-            cur = self._raw.execute(self._tr(sql) + " RETURNING id", tuple(params))
-            return cur.fetchone()[0]
-        cur = self._raw.execute(sql, tuple(params))
-        return cur.lastrowid
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        try:
-            if exc_type:
-                self._raw.rollback()
-            else:
-                self._raw.commit()
-        finally:
-            if self._pool is not None:
-                try:
-                    self._pool.putconn(self._raw)   # return to pool (stays warm)
-                except Exception:
-                    try:
-                        self._raw.close()
-                    except Exception:
-                        pass
-            else:
-                self._raw.close()
-        if exc_type is None and self._wrote:
-            _clear_read_cache()
-        return False
-
-
-def get_connection() -> _Conn:
-    """Open a connection. Rows behave like dicts (row["name"]) and tuples (row[0])."""
-    if is_postgres():
-        pool = _get_pg_pool()
-        if pool is not None:
-            try:
-                raw = pool.getconn(timeout=6)
-                return _Conn(raw, postgres=True, pool=pool)
-            except Exception:
-                # Pool can't serve a connection: stop using it and go direct so
-                # the app keeps working (this is what ran before pooling).
-                _disable_pg_pool()
-        # Direct connection — the fallback whenever the pool is unavailable.
-        # No connect_timeout: allow Neon's cold-start wake to take as long as it
-        # needs (matching the behaviour that worked before pooling).
-        import psycopg
-        raw = psycopg.connect(
-            _database_url(), autocommit=False, row_factory=_pg_row_factory,
-            prepare_threshold=None,
-        )
-        return _Conn(raw, postgres=True)
-
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    raw = sqlite3.connect(DB_PATH)
-    raw.row_factory = sqlite3.Row
-    raw.execute("PRAGMA foreign_keys = ON")
-    return _Conn(raw, postgres=False)
 
 
 def init_db() -> None:
@@ -531,10 +316,6 @@ def _add_column_if_missing(conn, table: str, column: str, coldef: str) -> None:
         existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
-
-
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 # --- Families --------------------------------------------------------------
@@ -882,22 +663,6 @@ def _period_key(recurrence: str, dt: datetime) -> str:
     return ""
 
 
-def _log_chore_audit(conn, family_id, chore_id, chore_name, actor_id, action, detail):
-    """Write one chore-audit row using the caller's connection (same txn)."""
-    actor_name = ""
-    if actor_id:
-        a = conn.execute("SELECT name FROM users WHERE id = ?", (actor_id,)).fetchone()
-        actor_name = a["name"] if a else ""
-    conn.execute(
-        """
-        INSERT INTO chore_audit (family_id, chore_id, chore_name, actor_id,
-                                 actor_name, action, detail, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (family_id, chore_id, chore_name, actor_id, actor_name, action, detail, _now()),
-    )
-
-
 def create_chore(
     family_id: int,
     name: str,
@@ -988,17 +753,6 @@ def list_chores(family_id: int, active_only: bool = False) -> list[Chore]:
     with get_connection() as conn:
         rows = conn.execute(query, (family_id,)).fetchall()
     return [Chore.from_row(r) for r in rows]
-
-
-@_cached
-def chore_audit_log(family_id: int, limit: int = 50) -> list[dict]:
-    """Who changed chores in this family (newest first)."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM chore_audit WHERE family_id = ? ORDER BY id DESC LIMIT ?",
-            (family_id, limit),
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 def _chore_claimed(chore: dict, kid_id: int, family_id: int) -> bool:
@@ -1209,78 +963,6 @@ def reject_chore_submission(submission_id: int, reviewer_id: int, note: str = ""
 
 
 # --- Penalties -------------------------------------------------------------
-
-def create_penalty(
-    family_id: int, name: str, value: int, description: str = "",
-    created_by: int | None = None,
-) -> int:
-    with get_connection() as conn:
-        return conn.insert(
-            """
-            INSERT INTO penalties (family_id, name, description, value, active,
-                                   created_by, created_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?)
-            """,
-            (family_id, name, description, value, created_by, _now()),
-        )
-
-
-def update_penalty(penalty_id: int, name: str, value: int, description: str = "") -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE penalties SET name = ?, description = ?, value = ? WHERE id = ?",
-            (name, description, value, penalty_id),
-        )
-
-
-def set_penalty_active(penalty_id: int, active: bool) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE penalties SET active = ? WHERE id = ?", (int(active), penalty_id)
-        )
-
-
-@_cached
-def list_penalties(family_id: int, active_only: bool = False) -> list[dict]:
-    query = "SELECT * FROM penalties WHERE family_id = ?"
-    if active_only:
-        query += " AND active = 1"
-    query += " ORDER BY active DESC, name COLLATE NOCASE"
-    with get_connection() as conn:
-        rows = conn.execute(query, (family_id,)).fetchall()
-    return [dict(r) for r in rows]
-
-
-def apply_penalty(
-    kid_id: int, penalty_id: int, applied_by: int, note: str = ""
-) -> bool:
-    """Record a penalty against a kid and deduct the bucks (a negative txn)."""
-    with get_connection() as conn:
-        pen = conn.execute(
-            "SELECT name, value FROM penalties WHERE id = ?", (penalty_id,)
-        ).fetchone()
-        if not pen:
-            return False
-        app_id = conn.insert(
-            """
-            INSERT INTO penalty_applications (kid_id, penalty_id, value, note,
-                                              applied_by, applied_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (kid_id, penalty_id, pen["value"], note, applied_by, _now()),
-        )
-        reason = f"Penalty: {pen['name']}"
-        if note:
-            reason += f" ({note})"
-        conn.execute(
-            """
-            INSERT INTO transactions (kid_id, amount, type, reason, ref_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (kid_id, -abs(pen["value"]), TXN_PENALTY, reason, app_id, _now()),
-        )
-    return True
-
 
 # --- Redemption options (rates) & requests ---------------------------------
 
