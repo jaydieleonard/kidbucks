@@ -113,7 +113,7 @@ with st.expander("📜 Change log — who changed what"):
     else:
         icons = {"created": "➕", "edited": "✏️", "archived": "🗄️", "restored": "♻️"}
         for e in entries:
-            when = (e["created_at"] or "")[:16].replace("T", " ")
+            when = db.fmt_dt(e["created_at"], "%Y-%m-%d %H:%M")
             who = e["actor_name"] or "Someone"
             icon = icons.get(e["action"], "•")
             line = f"{icon} **{who}** {e['action']} “{e['chore_name']}”"

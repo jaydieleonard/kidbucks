@@ -6,8 +6,6 @@ once you've handed over the cash), plus a per-month history for earlier months.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 import pandas as pd
 import streamlit as st
 
@@ -55,11 +53,7 @@ else:
     for r in this_month:
         with st.container(border=True):
             c1, c2, c3 = st.columns([2, 2, 2])
-            when = r["reviewed_at"] or r["requested_at"] or ""
-            try:
-                when = datetime.fromisoformat(when).strftime("%d %b")
-            except ValueError:
-                when = when[:10]
+            when = db.fmt_dt(r["reviewed_at"] or r["requested_at"] or "", "%d %b")
             c1.markdown(
                 f"**{db.fmt_units(r['units'], r['unit_label'])}**  \n_{when}_"
             )

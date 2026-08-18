@@ -39,56 +39,16 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from config import (
+    BUCK, CODE_ALPHABET, DEFAULT_CHORES, DEFAULT_PENALTIES, DEFAULT_REDEMPTIONS,
+    RECURRENCE_LABELS, RECURRENCE_ONCE, RECURRENCE_OPTIONS,
+    TXN_ADJUSTMENT, TXN_BONUS, TXN_CHORE, TXN_DEMERIT, TXN_PENALTY, TXN_REDEMPTION,
+)
+from formatting import fmt_dt, fmt_units, is_currency_unit
+
 # Resolve the DB path relative to THIS file so the app works no matter what
 # directory Streamlit is launched from.
 DB_PATH = Path(__file__).parent / "data" / "kidbucks.db"
-
-# Transaction ledger categories.
-TXN_CHORE = "chore"
-TXN_PENALTY = "penalty"
-TXN_REDEMPTION = "redemption"
-TXN_ADJUSTMENT = "adjustment"
-TXN_BONUS = "bonus"        # spontaneous reward for good behaviour
-TXN_DEMERIT = "demerit"    # spontaneous one-off deduction
-
-# Currency glyph for KidBucks (kept here too so db-layer logs can use it).
-BUCK = "₿"
-
-# Chore recurrence values and their human labels.
-RECURRENCE_ONCE = "once"
-RECURRENCE_OPTIONS = ["once", "daily", "weekly", "monthly"]
-RECURRENCE_LABELS = {
-    "once": "One-time",
-    "daily": "Daily",
-    "weekly": "Weekly",
-    "monthly": "Monthly",
-}
-
-# Family-code alphabet with ambiguous characters (I, L, O, 0, 1) removed.
-_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-
-# --- Starter content given to every brand-new family (tweak freely) --------
-# Applied once when a family is created, so they aren't staring at blank Chores/
-# Penalties/Redemption pages (and so redeeming + the pocket-money dashboard work
-# out of the box). Families can edit/delete/add anything afterwards.
-DEFAULT_CHORES = [
-    # name, value, recurrence, shared, description
-    ("Make your bed", 5, "daily", False, "Every morning."),
-    ("Wash the dishes", 10, "daily", False, "After dinner."),
-    ("Tidy your room", 15, "weekly", False, ""),
-    ("Take out the bins", 20, "weekly", True, "Family task — whoever does it first!"),
-]
-DEFAULT_PENALTIES = [
-    # name, value, description
-    ("Back-talk", 10, "Being rude to a grown-up."),
-    ("Missed homework", 15, "Homework not done on time."),
-    ("Left a mess", 5, ""),
-]
-DEFAULT_REDEMPTIONS = [
-    # name, unit, bucks_per_unit, per_child
-    ("Pocket Money", "R", 10.0, True),    # 10 KidBucks = R1, per-child rates on
-    ("Screen Time", "min", 2.0, False),   # 2 KidBucks = 1 minute
-]
 
 
 def seed_family_defaults(family_id: int, created_by: int | None = None) -> None:
@@ -576,24 +536,6 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-# Units that are written before the amount (e.g. Rand -> "R1", not "1 R").
-# Anything else (minutes, points, …) is written after it ("30 min").
-_CURRENCY_UNITS = {"r", "$", "£", "€", "¥"}
-
-
-def fmt_units(amount, unit: str) -> str:
-    """Format a redemption quantity with its unit the natural way.
-
-    Currency symbols prefix the amount ('R', '$' -> 'R5', '$5'); everything else
-    is a suffix ('30 min'). Whole numbers show without a trailing '.0'.
-    """
-    a = f"{amount:g}"
-    u = (unit or "").strip()
-    if u.lower() in _CURRENCY_UNITS:
-        return f"{u}{a}"
-    return f"{a} {u}"
-
-
 # --- Families --------------------------------------------------------------
 
 def _slug(name: str) -> str:
@@ -605,7 +547,7 @@ def _gen_family_code(name: str) -> str:
     """A shareable code like SMITH-7K2Q, guaranteed unique."""
     slug = _slug(name)
     for _ in range(50):
-        suffix = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
+        suffix = "".join(secrets.choice(CODE_ALPHABET) for _ in range(4))
         code = f"{slug}-{suffix}"
         if get_family_by_code(code) is None:
             return code
@@ -1656,10 +1598,6 @@ def month_label(month: str) -> str:
         return datetime.strptime(month + "-01", "%Y-%m-%d").strftime("%B %Y")
     except (ValueError, TypeError):
         return month
-
-
-def is_currency_unit(unit: str) -> bool:
-    return (unit or "").strip().lower() in _CURRENCY_UNITS
 
 
 def _redemption_month(row: dict) -> str:

@@ -19,28 +19,10 @@ import time
 import streamlit as st
 
 import db
-
-_PBKDF2_ROUNDS = 200_000
-
-# "Stay logged in" token lifetime. Note: on iOS Safari, script-set cookies are
-# capped to ~7 days of inactivity regardless of this, so kids there stay signed
-# in up to a week; the home-screen icon still carries the family code after that.
-LOGIN_TOKEN_TTL_SECONDS = 30 * 24 * 3600
-
-# Currency glyph shown throughout the app (KidBucks = ₿).
-BUCK = "₿"
-
-# Avatars kids and parents can pick. One shared list so every screen matches.
-EMOJI_CHOICES = [
-    "🙂", "😀", "😎", "🦄", "🐯", "🦖", "🐶", "🐱", "🦁", "🐢", "🦋",
-    "🚀", "🚗", "🏍️", "🚲", "⚽", "🏀", "🏏", "🎮", "🎸", "🎨",
-    "🌟", "🌸", "🌈", "🍕",
-]
-
-
-def fmt_bucks(amount) -> str:
-    """Render an amount of KidBucks, e.g. 125 -> '125 ₿'."""
-    return f"{amount:,} {BUCK}"
+# Re-exported so existing references (auth.BUCK, auth.fmt_bucks,
+# auth.EMOJI_CHOICES) keep working while the definitions live in one place.
+from config import BUCK, EMOJI_CHOICES, LOGIN_TOKEN_TTL_SECONDS, PBKDF2_ROUNDS
+from formatting import fmt_bucks  # noqa: F401  (re-export)
 
 
 # --- Family invite helpers -------------------------------------------------
@@ -76,7 +58,7 @@ def hash_secret(secret: str, salt: str | None = None) -> tuple[str, str]:
     if salt is None:
         salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
-        "sha256", secret.encode("utf-8"), bytes.fromhex(salt), _PBKDF2_ROUNDS
+        "sha256", secret.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ROUNDS
     )
     return digest.hex(), salt
 
