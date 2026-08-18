@@ -10,6 +10,10 @@ import streamlit as st
 import auth
 import db
 
+# Resilience shim: use db.fmt_dt when present, else a safe fallback — so a
+# deploy where this file is ahead of db.py degrades instead of crashing.
+_fmt_dt = getattr(db, "fmt_dt", lambda iso, *_a: (iso or "")[:16].replace("T", " "))
+
 user = auth.require("parent")
 
 st.title("🔔 Approvals")
@@ -33,7 +37,7 @@ for s in chore_subs:
                 f"{s['kid_emoji']} **{s['kid_name']}** did "
                 f"**{s['chore_name']}** — {auth.fmt_bucks(s['value'])}"
             )
-            st.caption(f"🕒 Requested {db.fmt_dt(s['submitted_at'])}")
+            st.caption(f"🕒 Requested {_fmt_dt(s['submitted_at'])}")
             if s["note"]:
                 st.caption(f"Note: {s['note']}")
         with c2:
@@ -60,7 +64,7 @@ for r in redemptions:
                 f"**{db.fmt_units(r['units'], r['unit_label'])}** of {r['option_name']} "
                 f"for {auth.fmt_bucks(r['bucks_spent'])}"
             )
-            st.caption(f"🕒 Requested {db.fmt_dt(r['requested_at'])}")
+            st.caption(f"🕒 Requested {_fmt_dt(r['requested_at'])}")
             affordable = r["bucks_spent"] <= r["kid_balance"]
             note = f"Current balance: {auth.fmt_bucks(r['kid_balance'])}"
             if affordable:

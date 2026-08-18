@@ -8,6 +8,8 @@ import streamlit as st
 import auth
 import db
 
+_fmt_dt = getattr(db, "fmt_dt", lambda iso, *_a: (iso or "")[:16].replace("T", " "))
+
 user = auth.require("parent")
 fam_id = user["family_id"]
 
@@ -113,7 +115,7 @@ with st.expander("📜 Change log — who changed what"):
     else:
         icons = {"created": "➕", "edited": "✏️", "archived": "🗄️", "restored": "♻️"}
         for e in entries:
-            when = db.fmt_dt(e["created_at"], "%Y-%m-%d %H:%M")
+            when = _fmt_dt(e["created_at"], "%Y-%m-%d %H:%M")
             who = e["actor_name"] or "Someone"
             icon = icons.get(e["action"], "•")
             line = f"{icon} **{who}** {e['action']} “{e['chore_name']}”"

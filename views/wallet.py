@@ -8,6 +8,8 @@ import streamlit as st
 import auth
 import db
 
+_fmt_dt = getattr(db, "fmt_dt", lambda iso, *_a: (iso or "")[:16].replace("T", " "))
+
 user = auth.require("kid")
 
 summary = db.kid_summary(user["id"])
@@ -25,7 +27,7 @@ if _recent:
             icon = "✅" if it["status"] == "approved" else "❌"
             is_new = _last_seen is None or (it["when"] and it["when"] > _last_seen)
             tag = "  🆕" if is_new else ""
-            when = db.fmt_dt(it["when"], "%Y-%m-%d")
+            when = _fmt_dt(it["when"], "%Y-%m-%d")
             if it["kind"] == "chore":
                 if it["status"] == "approved":
                     line = (f"{icon} Chore **{it['title']}** approved — "

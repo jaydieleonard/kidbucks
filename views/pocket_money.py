@@ -12,6 +12,8 @@ import streamlit as st
 import auth
 import db
 
+_fmt_dt = getattr(db, "fmt_dt", lambda iso, *_a: (iso or "")[:16].replace("T", " "))
+
 user = auth.require("parent")
 month = db.current_month()
 
@@ -53,7 +55,7 @@ else:
     for r in this_month:
         with st.container(border=True):
             c1, c2, c3 = st.columns([2, 2, 2])
-            when = db.fmt_dt(r["reviewed_at"] or r["requested_at"] or "", "%d %b")
+            when = _fmt_dt(r["reviewed_at"] or r["requested_at"] or "", "%d %b")
             c1.markdown(
                 f"**{db.fmt_units(r['units'], r['unit_label'])}**  \n_{when}_"
             )
